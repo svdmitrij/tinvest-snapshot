@@ -64,6 +64,9 @@ type bond struct {
 	MaturityDate          string      `json:"maturityDate"`
 	RiskLevel             string      `json:"riskLevel"`
 	Currency              string      `json:"currency"`
+	FloatingCouponFlag    bool        `json:"floatingCouponFlag"`
+	PerpetualFlag         bool        `json:"perpetualFlag"`
+	AmortizationFlag      bool        `json:"amortizationFlag"`
 }
 
 type bondResponse struct {

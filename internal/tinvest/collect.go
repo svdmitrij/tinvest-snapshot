@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dmitry/tinvest-snapshot/internal/bondyield"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 	"github.com/dmitry/tinvest-snapshot/internal/money"
 )
@@ -132,6 +133,8 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 	info := model.NewBondInfo()
 	var nominal float64
 	var perYear int32
+	var maturity time.Time
+	var hasMaturity, floating, perpetual, amortized bool
 	if b, err := c.BondByUID(ctx, p.InstrumentUID); err == nil {
 		if b.CouponQuantityPerYear > 0 {
 			perYear = b.CouponQuantityPerYear
@@ -141,11 +144,15 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 			info.IssuerRating = b.RiskLevel
 		}
 		nominal = b.Nominal.Float()
+		floating, perpetual, amortized = b.FloatingCouponFlag, b.PerpetualFlag, b.AmortizationFlag
+		if t, perr := time.Parse(time.RFC3339, b.MaturityDate); perr == nil {
+			maturity, hasMaturity = t, true
+		}
 	} else {
 		c.log("Не удалось получить данные облигации %s: %v", p.InstrumentUID, err)
 	}
 
-	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(3, 0, 0))
+	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(30, 0, 0))
 	if err != nil {
 		c.log("Не удалось получить купоны %s: %v", p.InstrumentUID, err)
 		return info
@@ -158,7 +165,68 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 			info.CouponRatePct = strconv.FormatFloat(money.Round2(rate), 'f', 2, 64)
 		}
 	}
+
+	cleanPrice := p.CurrentPrice.Float()
+
+	// 6.1 Current yield = annual coupon income / current price.
+	if coupon, ok := representativeCoupon(events, now); ok && perYear > 0 {
+		annual := coupon.Float() * float64(perYear)
+		if cy, ok := bondyield.CurrentYield(annual, cleanPrice); ok {
+			info.CurrentYield = strconv.FormatFloat(money.Round2(cy), 'f', 2, 64)
+		}
+	}
+
+	// 6.2 YTM: only for fixed-coupon, non-amortized, non-perpetual bonds.
+	if !floating && !perpetual && !amortized && hasMaturity && nominal > 0 {
+		flows := bondCashFlows(events, now, maturity, nominal)
+		dirty := cleanPrice + p.CurrentNkd.Float()
+		if y, ok := bondyield.YTM(dirty, flows); ok {
+			info.YieldToMaturity = strconv.FormatFloat(money.Round2(y), 'f', 2, 64)
+		}
+	}
 	return info
+}
+
+// bondCashFlows builds the future cash flows (per bond) for YTM: each future
+// coupon at its date plus the nominal redemption at maturity.
+func bondCashFlows(events []couponEvent, now, maturity time.Time, nominal float64) []bondyield.CashFlow {
+	var flows []bondyield.CashFlow
+	for _, e := range events {
+		d, err := time.Parse(time.RFC3339, e.CouponDate)
+		if err != nil || !d.After(now) {
+			continue
+		}
+		flows = append(flows, bondyield.CashFlow{Years: yearsBetween(now, d), Amount: e.PayOneBond.Float()})
+	}
+	flows = append(flows, bondyield.CashFlow{Years: yearsBetween(now, maturity), Amount: nominal})
+	return flows
+}
+
+func yearsBetween(from, to time.Time) float64 {
+	return to.Sub(from).Hours() / 24 / 365
+}
+
+// representativeCoupon returns the next future coupon, or the most recent past
+// one if none is scheduled ahead, as a stand-in for the periodic coupon amount.
+func representativeCoupon(events []couponEvent, now time.Time) (money.Money, bool) {
+	if next, ok := nextCoupon(events, now); ok {
+		return next.PayOneBond, true
+	}
+	var last couponEvent
+	found := false
+	for _, e := range events {
+		t, err := time.Parse(time.RFC3339, e.CouponDate)
+		if err != nil || t.After(now) {
+			continue
+		}
+		if !found || t.After(mustParse(last.CouponDate)) {
+			last, found = e, true
+		}
+	}
+	if !found {
+		return money.Money{}, false
+	}
+	return last.PayOneBond, true
 }
 
 func (c *Client) enrichShare(ctx context.Context, p portfolioPosition, now time.Time) *model.ShareInfo {

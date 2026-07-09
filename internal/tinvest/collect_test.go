@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ func mockAPI(t *testing.T) *httptest.Server {
 			"positions":[
 				{"figi":"BBG00","instrumentType":"bond","instrumentUid":"bond-uid","quantity":{"units":"10","nano":0},
 				 "averagePositionPrice":{"currency":"rub","units":"900","nano":0},
+				 "currentNkd":{"currency":"rub","units":"5","nano":0},
 				 "currentPrice":{"currency":"rub","units":"950","nano":0}},
 				{"figi":"SHR00","instrumentType":"share","instrumentUid":"share-uid","quantity":{"units":"5","nano":0},
 				 "averagePositionPrice":{"currency":"rub","units":"100","nano":0},
@@ -33,9 +35,14 @@ func mockAPI(t *testing.T) *httptest.Server {
 				 "averagePositionPrice":{"currency":"rub","units":"1","nano":0},
 				 "currentPrice":{"currency":"rub","units":"1","nano":0}}
 			]}`,
-		"BondBy":         `{"instrument":{"figi":"BBG00","name":"ОФЗ","couponQuantityPerYear":4,"nominal":{"currency":"rub","units":"1000","nano":0},"riskLevel":"RISK_LEVEL_LOW","currency":"rub"}}`,
-		"GetBondCoupons": `{"events":[{"couponDate":"2026-09-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0},"couponType":"COUPON_TYPE_FIXED"}]}`,
-		"GetDividends":   `{"dividends":[{"dividendNet":{"currency":"rub","units":"7","nano":0},"paymentDate":"2026-05-01T00:00:00Z","declaredDate":"2026-04-01T00:00:00Z","regularity":"annual"}]}`,
+		"BondBy": `{"instrument":{"figi":"BBG00","name":"ОФЗ","couponQuantityPerYear":4,"nominal":{"currency":"rub","units":"1000","nano":0},"riskLevel":"RISK_LEVEL_LOW","currency":"rub","maturityDate":"2027-07-09T00:00:00Z","floatingCouponFlag":false,"perpetualFlag":false,"amortizationFlag":false}}`,
+		"GetBondCoupons": `{"events":[
+			{"couponDate":"2026-09-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0},"couponType":"COUPON_TYPE_FIXED"},
+			{"couponDate":"2026-12-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0},"couponType":"COUPON_TYPE_FIXED"},
+			{"couponDate":"2027-03-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0},"couponType":"COUPON_TYPE_FIXED"},
+			{"couponDate":"2027-06-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0},"couponType":"COUPON_TYPE_FIXED"}
+		]}`,
+		"GetDividends": `{"dividends":[{"dividendNet":{"currency":"rub","units":"7","nano":0},"paymentDate":"2026-05-01T00:00:00Z","declaredDate":"2026-04-01T00:00:00Z","regularity":"annual"}]}`,
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
@@ -121,8 +128,22 @@ func TestCollectSandbox(t *testing.T) {
 	if share.Share == nil || share.Share.LastDividendAmount != "7" {
 		t.Errorf("share dividend = %+v", share.Share)
 	}
-	// YTM / current yield are not provided by the API -> NA
-	if bond.Bond.YieldToMaturity != model.NA {
-		t.Errorf("ytm = %q, want NA", bond.Bond.YieldToMaturity)
+
+	// 6.1 current yield = annual coupon (20*4=80) / clean price 950 = 8.42%.
+	if bond.Bond.CurrentYield != "8.42" {
+		t.Errorf("current yield = %q, want 8.42", bond.Bond.CurrentYield)
+	}
+	// 6.2 YTM must be a number for this fixed, non-amortized bond, and since it
+	// trades at a discount (dirty 955 < redemption 1000) it must exceed the
+	// current yield.
+	if bond.Bond.YieldToMaturity == model.NA {
+		t.Fatalf("ytm = NA, want a number for fixed non-amortized bond")
+	}
+	ytm, err := strconv.ParseFloat(bond.Bond.YieldToMaturity, 64)
+	if err != nil {
+		t.Fatalf("ytm not a number: %q", bond.Bond.YieldToMaturity)
+	}
+	if ytm <= 8.42 || ytm > 30 {
+		t.Errorf("ytm = %v, want in (8.42, 30] for a discounted bond", ytm)
 	}
 }
