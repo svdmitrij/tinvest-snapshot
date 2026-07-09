@@ -1,0 +1,243 @@
+package tinvest
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/dmitry/tinvest-snapshot/internal/model"
+	"github.com/dmitry/tinvest-snapshot/internal/money"
+)
+
+// Collect builds a full portfolio snapshot. targetCurrency ("" to disable)
+// adds converted totals. Per-instrument enrichment failures degrade to NA
+// and never abort the run; only account/portfolio failures are fatal.
+func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now time.Time) (*model.Snapshot, error) {
+	accounts, err := c.Accounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("получение списка счетов: %w", err)
+	}
+
+	snap := &model.Snapshot{
+		GeneratedAt:    now.UTC().Format(time.RFC3339),
+		Mode:           mode,
+		TargetCurrency: targetCurrency,
+	}
+
+	grand := map[string]float64{}
+	for _, a := range accounts {
+		acc, err := c.collectAccount(ctx, a, now)
+		if err != nil {
+			return nil, err
+		}
+		grand[acc.Total.Currency] += floatOf(acc.Total.Amount)
+		snap.Accounts = append(snap.Accounts, *acc)
+	}
+
+	for cur, amt := range grand {
+		snap.GrandTotals = append(snap.GrandTotals, model.Total{Currency: cur, Amount: money.FromFloat(amt).String()})
+	}
+
+	if targetCurrency != "" {
+		c.applyConversion(ctx, snap, targetCurrency)
+	}
+	return snap, nil
+}
+
+func (c *Client) collectAccount(ctx context.Context, a apiAccount, now time.Time) (*model.Account, error) {
+	pf, err := c.Portfolio(ctx, a.ID)
+	if err != nil {
+		return nil, fmt.Errorf("портфель счёта %s: %w", a.ID, err)
+	}
+	acc := &model.Account{
+		ID:    a.ID,
+		Name:  a.Name,
+		Type:  a.Type,
+		Total: model.Total{Currency: pf.TotalAmountPortfolio.Currency, Amount: pf.TotalAmountPortfolio.String()},
+	}
+
+	for _, p := range pf.Positions {
+		if p.InstrumentType == "currency" {
+			acc.Cash = append(acc.Cash, model.CashBalance{
+				Currency: currencyCode(p),
+				Amount:   p.Quantity.String(),
+			})
+			continue
+		}
+		acc.Positions = append(acc.Positions, c.buildPosition(ctx, p, now))
+	}
+	return acc, nil
+}
+
+func (c *Client) buildPosition(ctx context.Context, p portfolioPosition, now time.Time) model.Position {
+	pos := model.Position{
+		InstrumentType: p.InstrumentType,
+		Ticker:         model.NA,
+		ISIN:           model.NA,
+		Name:           model.NA,
+		Currency:       p.CurrentPrice.Currency,
+		Quantity:       p.Quantity.String(),
+		AvgPrice:       p.AveragePositionPrice.String(),
+		CurrentPrice:   p.CurrentPrice.String(),
+	}
+
+	qty := p.Quantity.Float()
+	cur := p.CurrentPrice.Float()
+	avg := p.AveragePositionPrice.Float()
+	value := qty * cur
+	cost := qty * avg
+	pos.CurrentValue = money.FromFloat(value).String()
+	pos.PnLAbs = money.FromFloat(value - cost).String()
+	if cost != 0 {
+		pos.PnLPct = strconv.FormatFloat(money.Round2((value-cost)/cost*100), 'f', 2, 64)
+	} else {
+		pos.PnLPct = model.NA
+	}
+
+	if instr, err := c.InstrumentByUID(ctx, p.InstrumentUID); err == nil {
+		if instr.Ticker != "" {
+			pos.Ticker = instr.Ticker
+		}
+		if instr.ISIN != "" {
+			pos.ISIN = instr.ISIN
+		}
+		if instr.Name != "" {
+			pos.Name = instr.Name
+		}
+		if instr.Currency != "" {
+			pos.Currency = instr.Currency
+		}
+	} else {
+		c.log("Не удалось получить справочные данные по инструменту %s: %v", p.InstrumentUID, err)
+	}
+
+	switch p.InstrumentType {
+	case "bond":
+		pos.Bond = c.enrichBond(ctx, p, now)
+	case "share":
+		pos.Share = c.enrichShare(ctx, p, now)
+	}
+	return pos
+}
+
+func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.Time) *model.BondInfo {
+	info := model.NewBondInfo()
+	var nominal float64
+	var perYear int32
+	if b, err := c.BondByUID(ctx, p.InstrumentUID); err == nil {
+		if b.CouponQuantityPerYear > 0 {
+			perYear = b.CouponQuantityPerYear
+			info.CouponFrequency = strconv.Itoa(int(perYear))
+		}
+		if b.RiskLevel != "" {
+			info.IssuerRating = b.RiskLevel
+		}
+		nominal = b.Nominal.Float()
+	} else {
+		c.log("Не удалось получить данные облигации %s: %v", p.InstrumentUID, err)
+	}
+
+	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(3, 0, 0))
+	if err != nil {
+		c.log("Не удалось получить купоны %s: %v", p.InstrumentUID, err)
+		return info
+	}
+	if next, ok := nextCoupon(events, now); ok {
+		info.NextCouponDate = formatDate(next.CouponDate)
+		info.NextCouponAmount = next.PayOneBond.String()
+		if nominal > 0 && perYear > 0 {
+			rate := next.PayOneBond.Float() * float64(perYear) / nominal * 100
+			info.CouponRatePct = strconv.FormatFloat(money.Round2(rate), 'f', 2, 64)
+		}
+	}
+	return info
+}
+
+func (c *Client) enrichShare(ctx context.Context, p portfolioPosition, now time.Time) *model.ShareInfo {
+	info := model.NewShareInfo()
+	divs, err := c.Dividends(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(1, 0, 0))
+	if err != nil {
+		c.log("Не удалось получить дивиденды %s: %v", p.InstrumentUID, err)
+		return info
+	}
+	var last, next *dividend
+	count12m := 0
+	for i := range divs {
+		d := &divs[i]
+		pd, perr := time.Parse(time.RFC3339, d.PaymentDate)
+		if perr != nil {
+			continue
+		}
+		if pd.After(now) {
+			if next == nil || pd.Before(mustParse(next.PaymentDate)) {
+				next = d
+			}
+		} else {
+			if last == nil || pd.After(mustParse(last.PaymentDate)) {
+				last = d
+			}
+			if pd.After(now.AddDate(-1, 0, 0)) {
+				count12m++
+			}
+		}
+	}
+	if last != nil {
+		info.LastDividendAmount = last.DividendNet.String()
+	}
+	if count12m > 0 {
+		info.Frequency = strconv.Itoa(count12m)
+	}
+	if next != nil {
+		info.NextPaymentDate = formatDate(next.PaymentDate)
+		info.NextPaymentAmount = next.DividendNet.String()
+	}
+	return info
+}
+
+func nextCoupon(events []couponEvent, now time.Time) (couponEvent, bool) {
+	var best couponEvent
+	found := false
+	for _, e := range events {
+		t, err := time.Parse(time.RFC3339, e.CouponDate)
+		if err != nil || !t.After(now) {
+			continue
+		}
+		if !found || t.Before(mustParse(best.CouponDate)) {
+			best, found = e, true
+		}
+	}
+	return best, found
+}
+
+func currencyCode(p portfolioPosition) string {
+	if p.CurrentPrice.Currency != "" {
+		return p.CurrentPrice.Currency
+	}
+	if p.AveragePositionPrice.Currency != "" {
+		return p.AveragePositionPrice.Currency
+	}
+	return model.NA
+}
+
+func formatDate(rfc string) string {
+	t, err := time.Parse(time.RFC3339, rfc)
+	if err != nil {
+		return model.NA
+	}
+	return t.Format("2006-01-02")
+}
+
+func mustParse(rfc string) time.Time {
+	t, _ := time.Parse(time.RFC3339, rfc)
+	return t
+}
+
+func floatOf(decimal string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(decimal), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}

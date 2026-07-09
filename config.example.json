@@ -1,0 +1,11 @@
+{
+  "mode": "sandbox",
+  "token": "",
+  "token_env": "TINVEST_TOKEN",
+  "retries": 3,
+  "retry_delay_ms": 1000,
+  "reports_dir": "reports",
+  "target_currency": "",
+  "endpoint": "",
+  "app_name": "tinvest-snapshot"
+}

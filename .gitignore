@@ -1,0 +1,16 @@
+# Secrets — never commit
+secrets
+.env
+*.env
+
+# Build artifacts
+/dist/
+/bin/
+tinvest-snapshot
+tinvest-snapshot.exe
+
+# Reports (runtime output)
+/reports/
+
+# Local harness settings
+.claude/

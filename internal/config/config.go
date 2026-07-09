@@ -1,0 +1,130 @@
+// Package config loads and validates the utility configuration.
+// Configuration is JSON to keep the binary free of external dependencies.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	ModeProd    = "prod"
+	ModeSandbox = "sandbox"
+
+	endpointProd    = "https://invest-public-api.tinkoff.ru/rest"
+	endpointSandbox = "https://sandbox-invest-public-api.tinkoff.ru/rest"
+)
+
+// Config is the on-disk configuration (see config.example.json).
+type Config struct {
+	// Mode selects the API environment: "prod" or "sandbox".
+	Mode string `json:"mode"`
+	// Token is the read-only API token. Prefer TokenEnv over storing it here.
+	Token string `json:"token"`
+	// TokenEnv names an environment variable to read the token from.
+	TokenEnv string `json:"token_env"`
+	// Retries is the number of extra attempts on transient API errors.
+	Retries int `json:"retries"`
+	// RetryDelayMs is the base delay between attempts (linear backoff).
+	RetryDelayMs int `json:"retry_delay_ms"`
+	// ReportsDir is where JSON/CSV snapshots are written.
+	ReportsDir string `json:"reports_dir"`
+	// TargetCurrency is the default currency for converted totals ("" = none).
+	TargetCurrency string `json:"target_currency"`
+	// Endpoint optionally overrides the API base URL for the selected mode.
+	Endpoint string `json:"endpoint"`
+	// AppName is sent in the x-app-name header for API analytics.
+	AppName string `json:"app_name"`
+}
+
+// Load reads and validates the configuration from path, applying defaults.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config %q: %w", path, err)
+	}
+	var c Config
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
+	if c.Mode == "" {
+		c.Mode = ModeSandbox
+	}
+	if c.Retries < 0 {
+		c.Retries = 0
+	}
+	if c.RetryDelayMs <= 0 {
+		c.RetryDelayMs = 1000
+	}
+	if c.AppName == "" {
+		c.AppName = "tinvest-snapshot"
+	}
+	if c.TokenEnv == "" && c.Token == "" {
+		c.TokenEnv = "TINVEST_TOKEN"
+	}
+	if c.ReportsDir == "" {
+		c.ReportsDir = defaultReportsDir()
+	}
+	c.TargetCurrency = strings.ToLower(strings.TrimSpace(c.TargetCurrency))
+}
+
+func (c *Config) validate() error {
+	if c.Mode != ModeProd && c.Mode != ModeSandbox {
+		return fmt.Errorf("invalid mode %q (want %q or %q)", c.Mode, ModeProd, ModeSandbox)
+	}
+	if c.Token == "" && c.TokenEnv == "" {
+		return fmt.Errorf("no token source: set token or token_env")
+	}
+	return nil
+}
+
+// ResolveToken returns the API token from the configured source.
+// The token is never logged or written anywhere by this package.
+func (c *Config) ResolveToken() (string, error) {
+	if c.TokenEnv != "" {
+		if v := strings.TrimSpace(os.Getenv(c.TokenEnv)); v != "" {
+			return v, nil
+		}
+		if c.Token == "" {
+			return "", fmt.Errorf("environment variable %s is empty and no inline token set", c.TokenEnv)
+		}
+	}
+	if c.Token != "" {
+		return c.Token, nil
+	}
+	return "", fmt.Errorf("token could not be resolved")
+}
+
+// BaseURL returns the API base URL for the configured mode.
+func (c *Config) BaseURL() string {
+	if c.Endpoint != "" {
+		return strings.TrimRight(c.Endpoint, "/")
+	}
+	if c.Mode == ModeSandbox {
+		return endpointSandbox
+	}
+	return endpointProd
+}
+
+// Sandbox reports whether the sandbox environment is selected.
+func (c *Config) Sandbox() bool { return c.Mode == ModeSandbox }
+
+func defaultReportsDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "reports"
+	}
+	return filepath.Join(filepath.Dir(exe), "reports")
+}
