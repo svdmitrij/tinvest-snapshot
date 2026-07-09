@@ -28,6 +28,9 @@ func mockAPI(t *testing.T) *httptest.Server {
 				 "currentPrice":{"currency":"rub","units":"120","nano":0}},
 				{"figi":"RUB00","instrumentType":"currency","instrumentUid":"rub-uid","quantity":{"units":"1000","nano":0},
 				 "averagePositionPrice":{"currency":"rub","units":"1","nano":0},
+				 "currentPrice":{"currency":"rub","units":"1","nano":0}},
+				{"figi":"RUB00","instrumentType":"currency","instrumentUid":"rub-uid","quantity":{"units":"500","nano":250000000},
+				 "averagePositionPrice":{"currency":"rub","units":"1","nano":0},
 				 "currentPrice":{"currency":"rub","units":"1","nano":0}}
 			]}`,
 		"BondBy":         `{"instrument":{"figi":"BBG00","name":"ОФЗ","couponQuantityPerYear":4,"nominal":{"currency":"rub","units":"1000","nano":0},"riskLevel":"RISK_LEVEL_LOW","currency":"rub"}}`,
@@ -80,8 +83,9 @@ func TestCollectSandbox(t *testing.T) {
 	if len(acc.Positions) != 2 {
 		t.Fatalf("positions = %d, want 2 (bond+share, cash excluded)", len(acc.Positions))
 	}
-	if len(acc.Cash) != 1 || acc.Cash[0].Currency != "rub" || acc.Cash[0].Amount != "1000" {
-		t.Errorf("cash = %+v", acc.Cash)
+	// Two rub currency positions (1000 + 500.25) must aggregate into one entry.
+	if len(acc.Cash) != 1 || acc.Cash[0].Currency != "rub" || acc.Cash[0].Amount != "1500.25" {
+		t.Errorf("cash = %+v, want single rub 1500.25", acc.Cash)
 	}
 	if acc.Total.Amount != "10500" || acc.Total.Currency != "rub" {
 		t.Errorf("account total = %+v", acc.Total)

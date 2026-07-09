@@ -110,6 +110,6 @@ func convert(cv *converter, t model.Total, target string) (*model.Converted, boo
 	return &model.Converted{
 		Currency: strings.ToLower(target),
 		Amount:   money.FromFloat(money.Round2(floatOf(t.Amount) * rate)).String(),
-		Rate:     strconv.FormatFloat(money.Round2(rate), 'f', -1, 64),
+		Rate:     strconv.FormatFloat(rate, 'f', -1, 64),
 	}, true
 }

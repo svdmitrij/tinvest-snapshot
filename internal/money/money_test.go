@@ -46,6 +46,17 @@ func TestMoneyUnmarshalUnitsAsString(t *testing.T) {
 	}
 }
 
+func TestQuotationAddExact(t *testing.T) {
+	// 1000 + 500.25 + 0.97 + 3 must be exact, no float drift.
+	sum := Quotation{Units: 1000}.
+		Add(Quotation{Units: 500, Nano: 250000000}).
+		Add(Quotation{Units: 0, Nano: 970000000}).
+		Add(Quotation{Units: 3})
+	if got := sum.String(); got != "1504.22" {
+		t.Errorf("Add chain = %q, want 1504.22", got)
+	}
+}
+
 func TestFromFloatRoundTrip(t *testing.T) {
 	q := FromFloat(42.75)
 	if q.Units != 42 || q.Nano != 750000000 {

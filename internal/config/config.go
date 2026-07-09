@@ -44,11 +44,11 @@ type Config struct {
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config %q: %w", path, err)
+		return nil, fmt.Errorf("не удалось прочитать конфиг %q: %w", path, err)
 	}
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("parse config %q: %w", path, err)
+		return nil, fmt.Errorf("не удалось разобрать конфиг %q: %w", path, err)
 	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
@@ -82,10 +82,10 @@ func (c *Config) applyDefaults() {
 
 func (c *Config) validate() error {
 	if c.Mode != ModeProd && c.Mode != ModeSandbox {
-		return fmt.Errorf("invalid mode %q (want %q or %q)", c.Mode, ModeProd, ModeSandbox)
+		return fmt.Errorf("недопустимый режим %q (ожидается %q или %q)", c.Mode, ModeProd, ModeSandbox)
 	}
 	if c.Token == "" && c.TokenEnv == "" {
-		return fmt.Errorf("no token source: set token or token_env")
+		return fmt.Errorf("не задан источник токена: укажите token или token_env")
 	}
 	return nil
 }
@@ -98,13 +98,13 @@ func (c *Config) ResolveToken() (string, error) {
 			return v, nil
 		}
 		if c.Token == "" {
-			return "", fmt.Errorf("environment variable %s is empty and no inline token set", c.TokenEnv)
+			return "", fmt.Errorf("переменная окружения %s пуста и inline-токен не задан", c.TokenEnv)
 		}
 	}
 	if c.Token != "" {
 		return c.Token, nil
 	}
-	return "", fmt.Errorf("token could not be resolved")
+	return "", fmt.Errorf("не удалось получить токен")
 }
 
 // BaseURL returns the API base URL for the configured mode.

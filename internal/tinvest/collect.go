@@ -58,15 +58,21 @@ func (c *Client) collectAccount(ctx context.Context, a apiAccount, now time.Time
 		Total: model.Total{Currency: pf.TotalAmountPortfolio.Currency, Amount: pf.TotalAmountPortfolio.String()},
 	}
 
+	cash := map[string]money.Quotation{}
+	var cashOrder []string
 	for _, p := range pf.Positions {
 		if p.InstrumentType == "currency" {
-			acc.Cash = append(acc.Cash, model.CashBalance{
-				Currency: currencyCode(p),
-				Amount:   p.Quantity.String(),
-			})
+			code := currencyCode(p)
+			if _, seen := cash[code]; !seen {
+				cashOrder = append(cashOrder, code)
+			}
+			cash[code] = cash[code].Add(p.Quantity)
 			continue
 		}
 		acc.Positions = append(acc.Positions, c.buildPosition(ctx, p, now))
+	}
+	for _, code := range cashOrder {
+		acc.Cash = append(acc.Cash, model.CashBalance{Currency: code, Amount: cash[code].String()})
 	}
 	return acc, nil
 }

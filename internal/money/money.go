@@ -28,6 +28,18 @@ type Money struct {
 // cross-currency conversion, not for lossless storage.
 func (q Quotation) Float() float64 { return float64(q.Units) + float64(q.Nano)/1e9 }
 
+// Add returns q+o computed exactly on the integer units/nano representation,
+// avoiding float rounding when aggregating monetary amounts.
+func (q Quotation) Add(o Quotation) Quotation {
+	return fromNano(q.nano() + o.nano())
+}
+
+func (q Quotation) nano() int64 { return q.Units*1_000_000_000 + int64(q.Nano) }
+
+func fromNano(total int64) Quotation {
+	return Quotation{Units: total / 1_000_000_000, Nano: int32(total % 1_000_000_000)}
+}
+
 // String renders the value as a plain decimal string with no rounding.
 func (q Quotation) String() string { return decimal(q.Units, q.Nano) }
 
