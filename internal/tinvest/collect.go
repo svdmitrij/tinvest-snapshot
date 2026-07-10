@@ -47,6 +47,108 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 	return snap, nil
 }
 
+// CollectOperations fetches operations across all accounts within the period.
+// globalFrom, when non-nil, is the single start bound for every account; when
+// nil each account starts from its own opening date. The returned period holds
+// the effective bounds (earliest start actually used, and to). Instrument
+// enrichment failures degrade to empty fields and never abort the run; only
+// account listing or operations retrieval failures are fatal.
+func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, to time.Time) ([]model.Operation, model.OperationsPeriod, error) {
+	accounts, err := c.Accounts(ctx)
+	if err != nil {
+		return nil, model.OperationsPeriod{}, fmt.Errorf("получение списка счетов: %w", err)
+	}
+
+	ops := []model.Operation{}
+	instrCache := map[string]*instrumentShort{}
+	effectiveFrom := to
+	for _, a := range accounts {
+		from := to
+		if globalFrom != nil {
+			from = *globalFrom
+		} else {
+			from = accountStart(a, to)
+		}
+		if from.Before(effectiveFrom) {
+			effectiveFrom = from
+		}
+		items, err := c.Operations(ctx, a.ID, from, to)
+		if err != nil {
+			return nil, model.OperationsPeriod{}, fmt.Errorf("операции счёта %s: %w", a.ID, err)
+		}
+		for _, it := range items {
+			ops = append(ops, c.buildOperation(ctx, a, it, instrCache))
+		}
+	}
+
+	period := model.OperationsPeriod{From: rfc3339(effectiveFrom), To: rfc3339(to)}
+	return ops, period, nil
+}
+
+// accountStart returns the account opening date, or a 30-year floor when the
+// API does not report one (so nothing is silently dropped).
+func accountStart(a apiAccount, to time.Time) time.Time {
+	if t, err := time.Parse(time.RFC3339, a.OpenedDate); err == nil {
+		return t
+	}
+	return to.AddDate(-30, 0, 0)
+}
+
+func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationItem, cache map[string]*instrumentShort) model.Operation {
+	op := model.Operation{
+		ID:              it.ID,
+		AccountID:       a.ID,
+		AccountName:     a.Name,
+		DateTime:        it.Date,
+		Type:            operationTypeName(it),
+		InstrumentType:  it.InstrumentType,
+		Quantity:        it.Quantity,
+		PaymentAmount:   it.Payment.String(),
+		PaymentCurrency: it.Payment.Currency,
+		State:           operationStateName(it.State),
+	}
+	if it.InstrumentUID == "" {
+		return op
+	}
+	instr, ok := cache[it.InstrumentUID]
+	if !ok {
+		if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
+			instr = got
+		} else {
+			c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+		}
+		cache[it.InstrumentUID] = instr
+	}
+	if instr != nil {
+		op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
+	}
+	return op
+}
+
+// operationTypeName prefers the API's human-readable label, falling back to
+// the raw enum when it is absent.
+func operationTypeName(it operationItem) string {
+	if it.Name != "" {
+		return it.Name
+	}
+	return it.Type
+}
+
+func operationStateName(state string) string {
+	switch state {
+	case "OPERATION_STATE_EXECUTED":
+		return "исполнена"
+	case "OPERATION_STATE_CANCELED":
+		return "отменена"
+	case "OPERATION_STATE_PROGRESS":
+		return "в процессе"
+	case "", "OPERATION_STATE_UNSPECIFIED":
+		return model.NA
+	default:
+		return state
+	}
+}
+
 func (c *Client) collectAccount(ctx context.Context, a apiAccount, now time.Time) (*model.Account, error) {
 	pf, err := c.Portfolio(ctx, a.ID)
 	if err != nil {
