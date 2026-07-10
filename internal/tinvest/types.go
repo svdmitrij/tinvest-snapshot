@@ -6,10 +6,11 @@ import "github.com/dmitry/tinvest-snapshot/internal/money"
 // lowerCamelCase field names; int64 fields are encoded as strings).
 
 type apiAccount struct {
-	ID     string `json:"id"`
-	Type   string `json:"type"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	OpenedDate string `json:"openedDate"`
 }
 
 type getAccountsResponse struct {
@@ -130,4 +131,33 @@ type lastPrice struct {
 
 type lastPricesResponse struct {
 	LastPrices []lastPrice `json:"lastPrices"`
+}
+
+type operationsByCursorRequest struct {
+	AccountID string `json:"accountId"`
+	From      string `json:"from,omitempty"`
+	To        string `json:"to,omitempty"`
+	Cursor    string `json:"cursor,omitempty"`
+	Limit     int32  `json:"limit,omitempty"`
+}
+
+// operationItem mirrors GetOperationsByCursor items. Name is the API's
+// human-readable operation label; Type is the raw enum used as a fallback.
+type operationItem struct {
+	ID             string      `json:"id"`
+	Date           string      `json:"date"`
+	Type           string      `json:"type"`
+	Name           string      `json:"name"`
+	State          string      `json:"state"`
+	InstrumentUID  string      `json:"instrumentUid"`
+	Figi           string      `json:"figi"`
+	InstrumentType string      `json:"instrumentType"`
+	Payment        money.Money `json:"payment"`
+	Quantity       string      `json:"quantity"`
+}
+
+type operationsByCursorResponse struct {
+	HasNext    bool            `json:"hasNext"`
+	NextCursor string          `json:"nextCursor"`
+	Items      []operationItem `json:"items"`
 }

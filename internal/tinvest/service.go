@@ -94,4 +94,29 @@ func (c *Client) LastPrices(ctx context.Context, uids []string) ([]lastPrice, er
 	return resp.LastPrices, nil
 }
 
+// Operations returns all operations on an account within [from, to],
+// following the API's cursor pagination so multi-year history is complete.
+func (c *Client) Operations(ctx context.Context, accountID string, from, to time.Time) ([]operationItem, error) {
+	var all []operationItem
+	cursor := ""
+	for {
+		req := operationsByCursorRequest{
+			AccountID: accountID,
+			From:      rfc3339(from),
+			To:        rfc3339(to),
+			Cursor:    cursor,
+			Limit:     1000,
+		}
+		var resp operationsByCursorResponse
+		if err := c.call(ctx, "OperationsService", "GetOperationsByCursor", req, &resp); err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Items...)
+		if !resp.HasNext || resp.NextCursor == "" || resp.NextCursor == cursor {
+			return all, nil
+		}
+		cursor = resp.NextCursor
+	}
+}
+
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }

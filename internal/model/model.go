@@ -7,12 +7,40 @@ const NA = "н/д"
 
 // Snapshot is the full result of a single run.
 type Snapshot struct {
-	GeneratedAt    string     `json:"generated_at"`
-	Mode           string     `json:"mode"`
-	TargetCurrency string     `json:"target_currency,omitempty"`
-	Accounts       []Account  `json:"accounts"`
-	GrandTotals    []Total    `json:"grand_totals"`
-	GrandConverted *Converted `json:"grand_total_converted,omitempty"`
+	GeneratedAt      string            `json:"generated_at"`
+	Mode             string            `json:"mode"`
+	TargetCurrency   string            `json:"target_currency,omitempty"`
+	Accounts         []Account         `json:"accounts"`
+	GrandTotals      []Total           `json:"grand_totals"`
+	GrandConverted   *Converted        `json:"grand_total_converted,omitempty"`
+	OperationsPeriod *OperationsPeriod `json:"operations_period,omitempty"`
+	Operations       []Operation       `json:"operations"`
+}
+
+// OperationsPeriod records the effective bounds of the operations export
+// (RFC3339, UTC). From is the earliest bound actually used across accounts.
+type OperationsPeriod struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// Operation is a single account operation (trade, fee, cash flow, coupon,
+// dividend, tax, …). Instrument fields are empty when the operation is not
+// tied to an instrument.
+type Operation struct {
+	ID              string `json:"id"`
+	AccountID       string `json:"account_id"`
+	AccountName     string `json:"account_name"`
+	DateTime        string `json:"datetime"`
+	Type            string `json:"type"`
+	InstrumentType  string `json:"instrument_type"`
+	Ticker          string `json:"ticker"`
+	ISIN            string `json:"isin"`
+	Name            string `json:"name"`
+	Quantity        string `json:"quantity"`
+	PaymentAmount   string `json:"payment_amount"`
+	PaymentCurrency string `json:"payment_currency"`
+	State           string `json:"state"`
 }
 
 // Account holds one brokerage/IIS account with its positions and cash.
