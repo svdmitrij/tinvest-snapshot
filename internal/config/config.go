@@ -38,6 +38,10 @@ type Config struct {
 	Endpoint string `json:"endpoint"`
 	// AppName is sent in the x-app-name header for API analytics.
 	AppName string `json:"app_name"`
+	// GUI-only preferences are ignored by the CLI and keep the file backwards compatible.
+	AutoRefreshMinutes int    `json:"auto_refresh_minutes,omitempty"`
+	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
+	Language           string `json:"language,omitempty"`
 }
 
 // Load reads and validates the configuration from path, applying defaults.
@@ -71,6 +75,12 @@ func (c *Config) applyDefaults() {
 	if c.AppName == "" {
 		c.AppName = "tinvest-snapshot"
 	}
+	if c.CatalogTTLHours <= 0 {
+		c.CatalogTTLHours = 24
+	}
+	if c.Language == "" {
+		c.Language = "ru"
+	}
 	if c.TokenEnv == "" && c.Token == "" {
 		c.TokenEnv = "TINVEST_TOKEN"
 	}
@@ -78,6 +88,37 @@ func (c *Config) applyDefaults() {
 		c.ReportsDir = defaultReportsDir()
 	}
 	c.TargetCurrency = strings.ToLower(strings.TrimSpace(c.TargetCurrency))
+}
+
+// Save writes configuration atomically. It deliberately does not resolve or
+// otherwise copy a token from the environment.
+func (c *Config) Save(path string) error {
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать конфиг: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err = tmp.Write(append(raw, '\n')); err == nil {
+		err = tmp.Close()
+	} else {
+		_ = tmp.Close()
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 func (c *Config) validate() error {

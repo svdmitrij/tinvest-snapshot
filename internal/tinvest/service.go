@@ -2,8 +2,76 @@ package tinvest
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 )
+
+// Catalog downloads the five read-only instrument directories. Bond coupon
+// dates/rates and share dividends are enriched with bounded concurrent calls.
+func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrument, error) {
+	types := []struct{ method, kind string }{{"Shares", "share"}, {"Bonds", "bond"}, {"Etfs", "etf"}, {"Currencies", "currency"}, {"Futures", "future"}}
+	var out []catalog.Instrument
+	for _, typ := range types {
+		var resp instrumentsResponse
+		if err := c.call(ctx, "InstrumentsService", typ.method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
+			return nil, err
+		}
+		for _, v := range resp.Instruments {
+			x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, MaturityDate: v.MaturityDate}
+			if v.Nominal.Currency != "" {
+				x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
+			}
+			out = append(out, x)
+		}
+	}
+	sem := make(chan struct{}, 8)
+	done := make(chan struct{}, len(out))
+	count := 0
+	for i := range out {
+		if out[i].Type != "bond" && out[i].Type != "share" {
+			continue
+		}
+		count++
+		go func(i int) {
+			sem <- struct{}{}
+			defer func() { <-sem; done <- struct{}{} }()
+			if out[i].Type == "bond" {
+				ev, e := c.Coupons(ctx, out[i].UID, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
+				if e == nil {
+					if n, ok := nextCoupon(ev, now); ok {
+						out[i].NextCouponDate = n.CouponDate
+						if out[i].CouponFrequency > 0 {
+							nom := parseAmount(out[i].Nominal)
+							if nom > 0 {
+								r := n.PayOneBond.Float() * float64(out[i].CouponFrequency) / nom * 100
+								out[i].CouponRatePct = &r
+							}
+						}
+					}
+				}
+			} else {
+				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
+				out[i].HasDividends = e == nil && len(d) > 0
+			}
+		}(i)
+	}
+	for i := 0; i < count; i++ {
+		<-done
+	}
+	return out, nil
+}
+
+func parseAmount(s string) float64 {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0
+	}
+	v, _ := strconv.ParseFloat(fields[0], 64)
+	return v
+}
 
 // Accounts returns all user accounts (sandbox or production).
 func (c *Client) Accounts(ctx context.Context) ([]apiAccount, error) {

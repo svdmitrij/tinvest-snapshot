@@ -119,6 +119,25 @@ type currenciesResponse struct {
 	Instruments []currency `json:"instruments"`
 }
 
+type apiInstrument struct {
+	UID                   string      `json:"uid"`
+	Figi                  string      `json:"figi"`
+	Ticker                string      `json:"ticker"`
+	Name                  string      `json:"name"`
+	ISIN                  string      `json:"isin"`
+	Currency              string      `json:"currency"`
+	Exchange              string      `json:"exchange"`
+	Sector                string      `json:"sector"`
+	RiskLevel             string      `json:"riskLevel"`
+	CouponQuantityPerYear int         `json:"couponQuantityPerYear"`
+	FloatingCouponFlag    bool        `json:"floatingCouponFlag"`
+	Nominal               money.Money `json:"nominal"`
+	MaturityDate          string      `json:"maturityDate"`
+}
+type instrumentsResponse struct {
+	Instruments []apiInstrument `json:"instruments"`
+}
+
 type lastPricesRequest struct {
 	InstrumentID []string `json:"instrumentId"`
 }
