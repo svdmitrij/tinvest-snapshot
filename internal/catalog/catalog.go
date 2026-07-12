@@ -28,6 +28,7 @@ type Instrument struct {
 	CouponRatePct   *float64 `json:"coupon_rate_pct,omitempty"`
 	NextCouponDate  string   `json:"next_coupon_date"`
 	HasDividends    bool     `json:"has_dividends"`
+	Enriched        bool     `json:"enriched,omitempty"`
 	Nominal         string   `json:"nominal,omitempty"`
 	MaturityDate    string   `json:"maturity_date,omitempty"`
 }

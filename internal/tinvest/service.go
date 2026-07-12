@@ -9,8 +9,8 @@ import (
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 )
 
-// Catalog downloads the five read-only instrument directories. Bond coupon
-// dates/rates and share dividends are enriched with bounded concurrent calls.
+// Catalog downloads the five read-only instrument directories. Expensive
+// coupon/dividend enrichment is deferred until local filters narrow the set.
 func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrument, error) {
 	types := []struct{ method, kind string }{{"Shares", "share"}, {"Bonds", "bond"}, {"Etfs", "etf"}, {"Currencies", "currency"}, {"Futures", "future"}}
 	var out []catalog.Instrument
@@ -27,17 +27,21 @@ func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrume
 			out = append(out, x)
 		}
 	}
-	sem := make(chan struct{}, 8)
+	return out, nil
+}
+
+// EnrichCatalog fills coupon and dividend fields for a locally narrowed set.
+func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) []catalog.Instrument {
+	out := append([]catalog.Instrument(nil), items...)
+	sem := make(chan struct{}, 6)
 	done := make(chan struct{}, len(out))
-	count := 0
 	for i := range out {
-		if out[i].Type != "bond" && out[i].Type != "share" {
-			continue
-		}
-		count++
 		go func(i int) {
 			sem <- struct{}{}
 			defer func() { <-sem; done <- struct{}{} }()
+			if out[i].Enriched {
+				return
+			}
 			if out[i].Type == "bond" {
 				ev, e := c.Coupons(ctx, out[i].UID, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
 				if e == nil {
@@ -52,16 +56,17 @@ func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrume
 						}
 					}
 				}
-			} else {
+			} else if out[i].Type == "share" {
 				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
 				out[i].HasDividends = e == nil && len(d) > 0
 			}
+			out[i].Enriched = true
 		}(i)
 	}
-	for i := 0; i < count; i++ {
+	for i := 0; i < len(out); i++ {
 		<-done
 	}
-	return out, nil
+	return out
 }
 
 func parseAmount(s string) float64 {
