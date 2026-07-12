@@ -1,1 +1,10 @@
-{"title":"T-Invest Портфель","portfolio":"Портфель","operations":"Операции","instruments":"Инструменты","settings":"Настройки","refresh":"Обновить","export":"Экспорт вида CSV/XLSX","search":"Поиск","loading":"Загрузка…","error":"Ошибка","retry":"Повторить","save":"Сохранить","group":"Группировка","all":"Все","details":"Карточка инструмента","from":"С:","to":"По:"}
+{
+  "title":"T-Invest Портфель","portfolio":"Портфель","operations":"Операции","instruments":"Инструменты","settings":"Настройки",
+  "refresh":"Обновить","export":"Экспорт вида CSV/XLSX","export_all":"JSON / CSV / XLSX","export_title":"Экспорт","refresh_first":"Сначала обновите данные",
+  "search":"Поиск","search_label":"Поиск:","filter_label":"Фильтр колонки:","group_label":"Группа:","value":"Значение","loading":"Загрузка…",
+  "error":"Ошибка","retry":"Повторить","save":"Сохранить","saved":"Сохранено","group":"Группировка","all":"Все","details":"Карточка инструмента",
+  "from":"С:","to":"По:","table":"Таблица","currency":"Валюта","exchange":"Биржа","sector":"Сектор","rate_from":"Ставка от","rate_to":"Ставка до","coupon_month":"Месяц купона",
+  "risk_low":"Низкий","risk_moderate":"Средний","risk_high":"Высокий","na":"н/д","monthly":"Раз в месяц","quarterly":"Раз в квартал","semiannual":"Раз в полгода","annual":"Раз в год",
+  "fixed":"Фиксированный","floating":"Флоатер","yes":"Да","no":"Нет","catalog_updated":"Справочник обновлён","free_cash":"Свободные деньги","account_total":"Итог счёта","all_accounts":"Все счета","grand_total":"Общий итог","grand_converted":"Общий итог (пересчёт)",
+  "mode":"Режим API","token_env":"Переменная токена","token_value":"Токен в конфиге","reports":"Каталог отчётов","target_currency":"Целевая валюта","retries":"Повторы","retry_delay":"Задержка повтора, мс","auto_refresh":"Автообновление, мин (0 = выкл.)","catalog_ttl":"Срок кэша, ч","language":"Язык"
+}

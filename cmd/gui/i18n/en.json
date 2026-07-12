@@ -1,1 +1,10 @@
-{"title":"T-Invest Portfolio","portfolio":"Portfolio","operations":"Operations","instruments":"Instruments","settings":"Settings","refresh":"Refresh","export":"Export view CSV/XLSX","search":"Search","loading":"Loading…","error":"Error","retry":"Retry","save":"Save","group":"Group","all":"All","details":"Instrument details","from":"From:","to":"To:"}
+{
+  "title":"T-Invest Portfolio","portfolio":"Portfolio","operations":"Operations","instruments":"Instruments","settings":"Settings",
+  "refresh":"Refresh","export":"Export view CSV/XLSX","export_all":"JSON / CSV / XLSX","export_title":"Export","refresh_first":"Refresh data first",
+  "search":"Search","search_label":"Search:","filter_label":"Column filter:","group_label":"Group:","value":"Value","loading":"Loading…",
+  "error":"Error","retry":"Retry","save":"Save","saved":"Saved","group":"Grouping","all":"All","details":"Instrument details",
+  "from":"From:","to":"To:","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Rate from","rate_to":"Rate to","coupon_month":"Coupon month",
+  "risk_low":"Low","risk_moderate":"Moderate","risk_high":"High","na":"n/a","monthly":"Monthly","quarterly":"Quarterly","semiannual":"Semiannual","annual":"Annual",
+  "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
+  "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","language":"Language"
+}

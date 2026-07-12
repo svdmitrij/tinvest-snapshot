@@ -131,11 +131,10 @@ func Search(all []Instrument, f Filter) []Instrument {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		less := strings.ToLower(key(out[i])) < strings.ToLower(key(out[j]))
 		if f.Desc {
-			return !less
+			return strings.ToLower(key(out[i])) > strings.ToLower(key(out[j]))
 		}
-		return less
+		return strings.ToLower(key(out[i])) < strings.ToLower(key(out[j]))
 	})
 	return out
 }

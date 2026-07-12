@@ -44,21 +44,27 @@ type desktop struct {
 	portfolio, operations, instruments *grid
 	from, to                           *widget.Entry
 	status                             *widget.Label
+	refreshStop                        chan struct{}
 }
 
 type grid struct {
-	mu           sync.RWMutex
-	window       fyne.Window
-	columns      []string
-	all, visible [][]string
-	table        *widget.Table
-	header, root *fyne.Container
-	search       *widget.Entry
-	group        *widget.Select
-	sortColumn   int
-	desc         bool
-	collapsed    map[string]bool
-	onRow        func([]string)
+	mu                     sync.RWMutex
+	window                 fyne.Window
+	columns                []string
+	all, visible, dataView [][]string
+	table                  *widget.Table
+	header, root           *fyne.Container
+	search                 *widget.Entry
+	filterColumn           *widget.Select
+	filterValue            *widget.Entry
+	matchIndex             int
+	navigating             bool
+	group                  *widget.Select
+	sortColumn             int
+	desc                   bool
+	collapsed              map[string]bool
+	onRow                  func([]string)
+	tr                     func(string) string
 }
 
 func main() {
@@ -96,37 +102,63 @@ func (d *desktop) tr(k string) string {
 }
 
 func (d *desktop) build() {
-	d.portfolio = newGrid(d.window)
-	d.operations = newGrid(d.window)
-	d.instruments = newGrid(d.window)
+	d.portfolio = newGrid(d.window, d.tr)
+	d.operations = newGrid(d.window, d.tr)
+	d.instruments = newGrid(d.window, d.tr)
 	d.from = widget.NewEntry()
 	d.from.SetPlaceHolder("YYYY-MM-DD")
 	d.to = widget.NewEntry()
 	d.to.SetPlaceHolder("YYYY-MM-DD")
 	d.status = widget.NewLabel("")
 	refresh := widget.NewButton(d.tr("refresh"), func() { d.refreshPortfolio() })
-	exportAll := widget.NewButton("JSON / CSV / XLSX", func() { d.exportAll() })
+	exportAll := widget.NewButton(d.tr("export_all"), func() { d.exportAll() })
 	portfolioBar := container.NewHBox(widget.NewLabel(d.tr("from")), d.from, widget.NewLabel(d.tr("to")), d.to, refresh, exportAll, widget.NewButton(d.tr("export"), func() { d.portfolio.exportView(d.cfg.ReportsDir) }))
 	operationsBar := container.NewHBox(widget.NewLabel(d.tr("from")), d.from, widget.NewLabel(d.tr("to")), d.to, refresh, widget.NewButton(d.tr("export"), func() { d.operations.exportView(d.cfg.ReportsDir) }))
 	searchTab := d.instrumentTab()
 	tabs := container.NewAppTabs(container.NewTabItem(d.tr("portfolio"), container.NewBorder(portfolioBar, nil, nil, nil, d.portfolio.root)), container.NewTabItem(d.tr("operations"), container.NewBorder(operationsBar, nil, nil, nil, d.operations.root)), container.NewTabItem(d.tr("instruments"), searchTab), container.NewTabItem(d.tr("settings"), d.settingsTab()))
 	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, tabs))
-	if d.cfg.AutoRefreshMinutes > 0 {
-		go func(period time.Duration) {
-			ticker := time.NewTicker(period)
-			defer ticker.Stop()
-			for range ticker.C {
-				d.refreshPortfolio()
-			}
-		}(time.Duration(d.cfg.AutoRefreshMinutes) * time.Minute)
+	if d.snapshot != nil {
+		pc, pr := portfolioRows(d.snapshot, d.tr)
+		oc, or := operationRows(d.snapshot)
+		d.portfolio.set(pc, pr)
+		d.operations.set(oc, or)
 	}
+	d.startAutoRefresh()
 }
 
-func newGrid(w fyne.Window) *grid {
-	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}}
+func (d *desktop) startAutoRefresh() {
+	if d.refreshStop != nil {
+		close(d.refreshStop)
+		d.refreshStop = nil
+	}
+	if d.cfg.AutoRefreshMinutes <= 0 {
+		return
+	}
+	stop := make(chan struct{})
+	d.refreshStop = stop
+	go func(period time.Duration) {
+		ticker := time.NewTicker(period)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				d.refreshPortfolio()
+			case <-stop:
+				return
+			}
+		}
+	}(time.Duration(d.cfg.AutoRefreshMinutes) * time.Minute)
+}
+
+func newGrid(w fyne.Window, tr func(string) string) *grid {
+	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr}
 	g.search = widget.NewEntry()
-	g.search.SetPlaceHolder("Поиск")
+	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
+	g.filterColumn = widget.NewSelect([]string{}, func(string) { g.apply() })
+	g.filterValue = widget.NewEntry()
+	g.filterValue.SetPlaceHolder(tr("value"))
+	g.filterValue.OnChanged = func(string) { g.apply() }
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
 		label := widget.NewLabel("")
 		label.Truncation = fyne.TextTruncateEllipsis
@@ -166,6 +198,11 @@ func newGrid(w fyne.Window) *grid {
 	}
 	g.table.OnSelected = func(id widget.TableCellID) {
 		g.mu.Lock()
+		if g.navigating {
+			g.navigating = false
+			g.mu.Unlock()
+			return
+		}
 		var selected []string
 		if id.Row >= 0 && id.Row < len(g.visible) && len(g.visible[id.Row]) > 0 {
 			value := g.visible[id.Row][0]
@@ -185,8 +222,9 @@ func newGrid(w fyne.Window) *grid {
 		g.apply()
 	}
 	g.header = container.NewHBox()
-	g.search.OnChanged = func(string) { g.apply() }
-	g.root = container.NewBorder(container.NewHBox(widget.NewLabel("Поиск:"), g.search, widget.NewLabel("Группа:"), g.group), nil, nil, nil, g.table)
+	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
+	next := widget.NewButton("↓", func() { g.findNext() })
+	g.root = container.NewBorder(container.NewHBox(widget.NewLabel(tr("search_label")), g.search, next, widget.NewLabel(tr("filter_label")), g.filterColumn, g.filterValue, widget.NewLabel(tr("group_label")), g.group), nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -195,6 +233,7 @@ func (g *grid) set(columns []string, rows [][]string) {
 	g.all = rows
 	g.mu.Unlock()
 	g.group.Options = append([]string{""}, columns...)
+	g.filterColumn.Options = append([]string{""}, columns...)
 	for i, c := range columns {
 		width := float32(140)
 		if len(c) > 16 {
@@ -206,10 +245,17 @@ func (g *grid) set(columns []string, rows [][]string) {
 }
 func (g *grid) apply() {
 	g.mu.Lock()
-	q := strings.ToLower(strings.TrimSpace(g.search.Text))
+	filter := strings.ToLower(strings.TrimSpace(g.filterValue.Text))
+	filterCol := -1
+	for i, c := range g.columns {
+		if c == g.filterColumn.Selected {
+			filterCol = i
+			break
+		}
+	}
 	rows := make([][]string, 0, len(g.all))
 	for _, r := range g.all {
-		if q == "" || strings.Contains(strings.ToLower(strings.Join(r, "\x00")), q) {
+		if filter == "" || filterCol < 0 || strings.Contains(strings.ToLower(r[filterCol]), filter) {
 			rows = append(rows, append([]string(nil), r...))
 		}
 	}
@@ -224,13 +270,13 @@ func (g *grid) apply() {
 	}
 	if col >= 0 {
 		sort.SliceStable(rows, func(i, j int) bool {
-			less := rows[i][col] < rows[j][col]
 			if g.desc {
-				return !less
+				return rows[i][col] > rows[j][col]
 			}
-			return less
+			return rows[i][col] < rows[j][col]
 		})
 	}
+	g.dataView = append([][]string(nil), rows...)
 	if groupName := g.group.Selected; groupName != "" {
 		groupCol := -1
 		for i, c := range g.columns {
@@ -265,6 +311,26 @@ func (g *grid) apply() {
 	g.mu.Unlock()
 	g.table.Refresh()
 }
+
+func (g *grid) findNext() {
+	g.mu.Lock()
+	q := strings.ToLower(strings.TrimSpace(g.search.Text))
+	if q == "" || len(g.visible) == 0 {
+		g.mu.Unlock()
+		return
+	}
+	for step := 1; step <= len(g.visible); step++ {
+		idx := (g.matchIndex + step) % len(g.visible)
+		if strings.Contains(strings.ToLower(strings.Join(g.visible[idx], "\x00")), q) {
+			g.matchIndex = idx
+			g.navigating = true
+			g.mu.Unlock()
+			fyne.Do(func() { id := widget.TableCellID{Row: idx, Col: 0}; g.table.ScrollTo(id); g.table.Select(id) })
+			return
+		}
+	}
+	g.mu.Unlock()
+}
 func (g *grid) exportView(dir string) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -281,7 +347,7 @@ func (g *grid) exportView(dir string) {
 	}
 	w := csv.NewWriter(f)
 	_ = w.Write(g.columns)
-	_ = w.WriteAll(g.visible)
+	_ = w.WriteAll(g.dataView)
 	w.Flush()
 	e = w.Error()
 	if ce := f.Close(); e == nil {
@@ -293,9 +359,9 @@ func (g *grid) exportView(dir string) {
 	}
 	x := excelize.NewFile()
 	defer x.Close()
-	sheet := "Таблица"
+	sheet := g.tr("table")
 	_ = x.SetSheetName("Sheet1", sheet)
-	rows := append([][]string{g.columns}, g.visible...)
+	rows := append([][]string{g.columns}, g.dataView...)
 	for ri, row := range rows {
 		for ci, value := range row {
 			cell, _ := excelize.CoordinatesToCellName(ci+1, ri+1)
@@ -306,7 +372,7 @@ func (g *grid) exportView(dir string) {
 		dialog.ShowError(e, g.window)
 		return
 	}
-	dialog.ShowInformation("Экспорт", csvPath+"\n"+xlsxPath, g.window)
+	dialog.ShowInformation(g.tr("export_title"), csvPath+"\n"+xlsxPath, g.window)
 }
 
 func (d *desktop) client() (*tinvest.Client, error) {
@@ -356,7 +422,7 @@ func (d *desktop) refreshPortfolio() {
 		d.mu.Lock()
 		d.snapshot = snap
 		d.mu.Unlock()
-		pc, pr := portfolioRows(snap)
+		pc, pr := portfolioRows(snap, d.tr)
 		oc, or := operationRows(snap)
 		fyne.Do(func() { d.portfolio.set(pc, pr); d.operations.set(oc, or) })
 		return nil
@@ -367,7 +433,7 @@ func (d *desktop) exportAll() {
 	snap := d.snapshot
 	d.mu.RUnlock()
 	if snap == nil {
-		dialog.ShowError(fmt.Errorf("сначала обновите данные"), d.window)
+		dialog.ShowError(fmt.Errorf("%s", d.tr("refresh_first")), d.window)
 		return
 	}
 	paths, e := report.Write(d.cfg.ReportsDir, time.Now(), snap)
@@ -375,15 +441,23 @@ func (d *desktop) exportAll() {
 		dialog.ShowError(e, d.window)
 		return
 	}
-	dialog.ShowInformation("Экспорт", strings.Join(paths.All(), "\n"), d.window)
+	dialog.ShowInformation(d.tr("export_title"), strings.Join(paths.All(), "\n"), d.window)
 }
 
-func portfolioRows(s *model.Snapshot) ([]string, [][]string) {
-	cols := []string{"account", "account_id", "type", "ticker", "isin", "name", "currency", "quantity", "avg_price", "current_price", "current_value", "pnl_abs", "pnl_pct", "coupon_rate_pct", "current_yield", "yield_to_maturity", "coupon_frequency", "next_coupon_date", "next_coupon_amount", "issuer_rating", "last_dividend_amount", "dividend_frequency", "next_payment_date", "next_payment_amount"}
+func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
+	cols := []string{"row_kind", "account", "account_id", "type", "ticker", "isin", "name", "currency", "quantity", "avg_price", "current_price", "current_value", "pnl_abs", "pnl_pct", "coupon_rate_pct", "current_yield", "yield_to_maturity", "coupon_frequency", "next_coupon_date", "next_coupon_amount", "issuer_rating", "last_dividend_amount", "dividend_frequency", "next_payment_date", "next_payment_amount", "total_amount", "converted_amount", "converted_currency", "conversion_rate"}
 	var rows [][]string
+	pad := func(values ...string) []string {
+		row := make([]string, len(cols))
+		for i := range row {
+			row[i] = model.NA
+		}
+		copy(row, values)
+		return row
+	}
 	for _, a := range s.Accounts {
 		for _, p := range a.Positions {
-			r := []string{a.Name, a.ID, p.InstrumentType, p.Ticker, p.ISIN, p.Name, p.Currency, p.Quantity, p.AvgPrice, p.CurrentPrice, p.CurrentValue, p.PnLAbs, p.PnLPct}
+			r := []string{"position", a.Name, a.ID, p.InstrumentType, p.Ticker, p.ISIN, p.Name, p.Currency, p.Quantity, p.AvgPrice, p.CurrentPrice, p.CurrentValue, p.PnLAbs, p.PnLPct}
 			if p.Bond != nil {
 				r = append(r, p.Bond.CouponRatePct, p.Bond.CurrentYield, p.Bond.YieldToMaturity, p.Bond.CouponFrequency, p.Bond.NextCouponDate, p.Bond.NextCouponAmount, p.Bond.IssuerRating)
 			} else {
@@ -394,8 +468,30 @@ func portfolioRows(s *model.Snapshot) ([]string, [][]string) {
 			} else {
 				r = append(r, model.NA, model.NA, model.NA, model.NA)
 			}
+			for len(r) < len(cols) {
+				r = append(r, model.NA)
+			}
 			rows = append(rows, r)
 		}
+		for _, cash := range a.Cash {
+			rows = append(rows, pad("cash", a.Name, a.ID, "cash", model.NA, model.NA, tr("free_cash"), cash.Currency, cash.Amount))
+		}
+		row := pad("account_total", a.Name, a.ID, "total", model.NA, model.NA, tr("account_total"), a.Total.Currency)
+		row[25] = a.Total.Amount
+		if a.TotalConverted != nil {
+			row[26], row[27], row[28] = a.TotalConverted.Amount, a.TotalConverted.Currency, a.TotalConverted.Rate
+		}
+		rows = append(rows, row)
+	}
+	for _, total := range s.GrandTotals {
+		row := pad("grand_total", tr("all_accounts"), model.NA, "total", model.NA, model.NA, tr("grand_total"), total.Currency)
+		row[25] = total.Amount
+		rows = append(rows, row)
+	}
+	if s.GrandConverted != nil {
+		row := pad("grand_converted", tr("all_accounts"), model.NA, "total", model.NA, model.NA, tr("grand_converted"), s.GrandConverted.Currency)
+		row[26], row[27], row[28] = s.GrandConverted.Amount, s.GrandConverted.Currency, s.GrandConverted.Rate
+		rows = append(rows, row)
 	}
 	return cols, rows
 }
@@ -421,17 +517,18 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	typeSelect := widget.NewSelect([]string{"share", "bond", "etf", "currency", "future"}, nil)
 	typeSelect.SetSelected("share")
 	currency, exchange, sector := widget.NewEntry(), widget.NewEntry(), widget.NewEntry()
-	currency.SetPlaceHolder("Валюта")
-	exchange.SetPlaceHolder("Биржа")
-	sector.SetPlaceHolder("Сектор")
-	risk := widget.NewSelect([]string{"", "RISK_LEVEL_LOW", "RISK_LEVEL_MODERATE", "RISK_LEVEL_HIGH", "RISK_LEVEL_UNSPECIFIED"}, nil)
-	frequency := widget.NewSelect([]string{"", "12", "4", "2", "1"}, nil)
-	couponType := widget.NewSelect([]string{"", "fixed", "floating"}, nil)
-	dividends := widget.NewSelect([]string{"", "yes", "no"}, nil)
+	currency.SetPlaceHolder(d.tr("currency"))
+	exchange.SetPlaceHolder(d.tr("exchange"))
+	sector.SetPlaceHolder(d.tr("sector"))
+	risk := widget.NewSelect([]string{"", d.tr("risk_low"), d.tr("risk_moderate"), d.tr("risk_high"), d.tr("na")}, nil)
+	frequency := widget.NewSelect([]string{"", d.tr("monthly"), d.tr("quarterly"), d.tr("semiannual"), d.tr("annual")}, nil)
+	couponType := widget.NewSelect([]string{"", d.tr("fixed"), d.tr("floating")}, nil)
+	dividends := widget.NewSelect([]string{"", d.tr("yes"), d.tr("no")}, nil)
 	rateFrom, rateTo, month := widget.NewEntry(), widget.NewEntry(), widget.NewEntry()
-	rateFrom.SetPlaceHolder("Ставка от")
-	rateTo.SetPlaceHolder("до")
-	month.SetPlaceHolder("Месяц")
+	rateFrom.SetPlaceHolder(d.tr("rate_from"))
+	rateTo.SetPlaceHolder(d.tr("rate_to"))
+	month.SetPlaceHolder(d.tr("coupon_month"))
+	updated := widget.NewLabel("")
 	load := func(force bool) {
 		d.busy(d.tr("loading"), func() error {
 			d.mu.Lock()
@@ -450,7 +547,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					return e
 				}
 			}
-			base := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: risk.Selected, Frequency: atoi(frequency.Selected), CouponType: couponType.Selected}
+			base := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d)}
 			candidates := catalog.Search(d.cache.Instruments, base)
 			needsDetails := rateFrom.Text != "" || rateTo.Text != "" || month.Text != "" || dividends.Selected != ""
 			if needsDetails {
@@ -470,13 +567,16 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			}
 			var dividendFilter *bool
 			if dividends.Selected != "" {
-				v := dividends.Selected == "yes"
+				v := dividends.Selected == d.tr("yes")
 				dividendFilter = &v
 			}
-			f := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: risk.Selected, Frequency: atoi(frequency.Selected), CouponType: couponType.Selected, RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: atoi(month.Text), Dividends: dividendFilter}
+			f := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: atoi(month.Text), Dividends: dividendFilter}
 			items := catalog.Search(d.cache.Instruments, f)
-			cols, rows := instrumentRows(items)
-			fyne.Do(func() { d.instruments.set(cols, rows) })
+			cols, rows := instrumentRows(items, d)
+			fyne.Do(func() {
+				d.instruments.set(cols, rows)
+				updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+			})
 			return nil
 		})
 	}
@@ -487,10 +587,48 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		s.OnChanged = func(string) { load(false) }
 	}
 	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(145, 38)), typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, month, widget.NewButton(d.tr("search"), func() { load(false) }), widget.NewButton(d.tr("refresh"), func() { load(true) }), widget.NewButton(d.tr("export"), func() { d.instruments.exportView(d.cfg.ReportsDir) }))
-	return container.NewBorder(bar, nil, nil, nil, d.instruments.root)
+	if d.cache != nil {
+		updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
-func instrumentRows(items []catalog.Instrument) ([]string, [][]string) {
+func riskAPI(s string, d *desktop) string {
+	switch s {
+	case d.tr("risk_low"):
+		return "RISK_LEVEL_LOW"
+	case d.tr("risk_moderate"):
+		return "RISK_LEVEL_MODERATE"
+	case d.tr("risk_high"):
+		return "RISK_LEVEL_HIGH"
+	case d.tr("na"):
+		return "RISK_LEVEL_UNSPECIFIED"
+	}
+	return ""
+}
+func frequencyAPI(s string, d *desktop) int {
+	switch s {
+	case d.tr("monthly"):
+		return 12
+	case d.tr("quarterly"):
+		return 4
+	case d.tr("semiannual"):
+		return 2
+	case d.tr("annual"):
+		return 1
+	}
+	return 0
+}
+func couponAPI(s string, d *desktop) string {
+	if s == d.tr("fixed") {
+		return "fixed"
+	}
+	if s == d.tr("floating") {
+		return "floating"
+	}
+	return ""
+}
+func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]string) {
 	cols := []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "uid", "figi"}
 	rows := make([][]string, 0, len(items))
 	for _, i := range items {
@@ -498,11 +636,23 @@ func instrumentRows(items []catalog.Instrument) ([]string, [][]string) {
 		if i.CouponRatePct != nil {
 			rate = strconv.FormatFloat(*i.CouponRatePct, 'f', 2, 64)
 		}
-		ct := "fixed"
+		ct := d.tr("fixed")
 		if i.FloatingCoupon {
-			ct = "floating"
+			ct = d.tr("floating")
 		}
-		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, i.RiskLevel, strconv.Itoa(i.CouponFrequency), ct, rate, i.NextCouponDate, strconv.FormatBool(i.HasDividends), i.Nominal, i.MaturityDate, i.UID, i.FIGI})
+		risk := map[string]string{"RISK_LEVEL_LOW": d.tr("risk_low"), "RISK_LEVEL_MODERATE": d.tr("risk_moderate"), "RISK_LEVEL_HIGH": d.tr("risk_high"), "RISK_LEVEL_UNSPECIFIED": d.tr("na")}[i.RiskLevel]
+		if risk == "" {
+			risk = d.tr("na")
+		}
+		freq := map[int]string{12: d.tr("monthly"), 4: d.tr("quarterly"), 2: d.tr("semiannual"), 1: d.tr("annual")}[i.CouponFrequency]
+		if freq == "" {
+			freq = d.tr("na")
+		}
+		div := d.tr("no")
+		if i.HasDividends {
+			div = d.tr("yes")
+		}
+		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, risk, freq, ct, rate, i.NextCouponDate, div, i.Nominal, i.MaturityDate, i.UID, i.FIGI})
 	}
 	return cols, rows
 }
@@ -511,6 +661,8 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	mode := widget.NewSelect([]string{config.ModeProd, config.ModeSandbox}, nil)
 	mode.SetSelected(d.cfg.Mode)
 	tokenEnv, reports, target := widget.NewEntry(), widget.NewEntry(), widget.NewEntry()
+	token := widget.NewPasswordEntry()
+	token.SetText(d.cfg.Token)
 	tokenEnv.SetText(d.cfg.TokenEnv)
 	reports.SetText(d.cfg.ReportsDir)
 	target.SetText(d.cfg.TargetCurrency)
@@ -524,11 +676,12 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
-	form := widget.NewForm(widget.NewFormItem("Mode", mode), widget.NewFormItem("Token env", tokenEnv), widget.NewFormItem("Reports", reports), widget.NewFormItem("Target currency", target), widget.NewFormItem("Retries", retries), widget.NewFormItem("Retry delay ms", delay), widget.NewFormItem("Auto refresh min", auto), widget.NewFormItem("Catalog TTL h", ttl), widget.NewFormItem("Language", lang))
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("auto_refresh"), auto), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
 		c.TokenEnv = tokenEnv.Text
+		c.Token = token.Text
 		c.ReportsDir = reports.Text
 		c.TargetCurrency = target.Text
 		c.Retries = atoi(retries.Text)
@@ -541,7 +694,9 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 			return
 		}
 		d.cfg = &c
-		dialog.ShowInformation(d.tr("settings"), "OK", d.window)
+		d.loadText()
+		d.build()
+		dialog.ShowInformation(d.tr("settings"), d.tr("saved"), d.window)
 	}
 	return container.NewVBox(form)
 }
