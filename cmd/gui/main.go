@@ -514,8 +514,12 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		}
 		dialog.ShowInformation(d.tr("details"), b.String(), d.window)
 	}
-	typeSelect := widget.NewSelect([]string{"share", "bond", "etf", "currency", "future"}, nil)
-	typeSelect.SetSelected("share")
+	typeOptions := make([]string, len(instrumentTypes))
+	for i, t := range instrumentTypes {
+		typeOptions[i] = d.tr("type_" + t)
+	}
+	typeSelect := widget.NewSelect(typeOptions, nil)
+	typeSelect.SetSelected(d.tr("type_share"))
 	currency, exchange, sector := widget.NewEntry(), widget.NewEntry(), widget.NewEntry()
 	currency.SetPlaceHolder(d.tr("currency"))
 	exchange.SetPlaceHolder(d.tr("exchange"))
@@ -547,7 +551,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					return e
 				}
 			}
-			base := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d)}
+			base := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d)}
 			candidates := catalog.Search(d.cache.Instruments, base)
 			needsDetails := rateFrom.Text != "" || rateTo.Text != "" || month.Text != "" || dividends.Selected != ""
 			if needsDetails {
@@ -570,7 +574,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				v := dividends.Selected == d.tr("yes")
 				dividendFilter = &v
 			}
-			f := catalog.Filter{Type: typeSelect.Selected, Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: atoi(month.Text), Dividends: dividendFilter}
+			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currency.Text, Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: atoi(month.Text), Dividends: dividendFilter}
 			items := catalog.Search(d.cache.Instruments, f)
 			cols, rows := instrumentRows(items, d)
 			fyne.Do(func() {
@@ -627,6 +631,17 @@ func couponAPI(s string, d *desktop) string {
 		return "floating"
 	}
 	return ""
+}
+
+var instrumentTypes = []string{"share", "bond", "etf", "currency", "future"}
+
+func typeAPI(label string, d *desktop) string {
+	for _, t := range instrumentTypes {
+		if label == d.tr("type_"+t) {
+			return t
+		}
+	}
+	return "share"
 }
 func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]string) {
 	cols := []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "uid", "figi"}

@@ -4,8 +4,25 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/dmitry/tinvest-snapshot/internal/config"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 )
+
+func TestTypeAPIRoundTripsLocalizedLabels(t *testing.T) {
+	for _, lang := range []string{"ru", "en"} {
+		d := &desktop{cfg: &config.Config{Language: lang}}
+		d.loadText()
+		for _, raw := range instrumentTypes {
+			label := d.tr("type_" + raw)
+			if label == "type_"+raw {
+				t.Errorf("%s: no translation for type_%s", lang, raw)
+			}
+			if got := typeAPI(label, d); got != raw {
+				t.Errorf("%s: typeAPI(%q)=%q want %q", lang, label, got, raw)
+			}
+		}
+	}
+}
 
 func TestPortfolioRowsIncludeCashAndTotals(t *testing.T) {
 	snap := &model.Snapshot{Accounts: []model.Account{{ID: "a1", Name: "Broker", Positions: []model.Position{{Ticker: "SBER"}}, Cash: []model.CashBalance{{Currency: "rub", Amount: "42"}}, Total: model.Total{Currency: "rub", Amount: "100"}, TotalConverted: &model.Converted{Currency: "usd", Amount: "1", Rate: "0.01"}}}, GrandTotals: []model.Total{{Currency: "rub", Amount: "100"}}, GrandConverted: &model.Converted{Currency: "usd", Amount: "1", Rate: "0.01"}}

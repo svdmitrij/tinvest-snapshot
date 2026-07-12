@@ -5,6 +5,6 @@
   "error":"Error","retry":"Retry","save":"Save","saved":"Saved","group":"Grouping","all":"All","details":"Instrument details",
   "from":"From:","to":"To:","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Rate from","rate_to":"Rate to","coupon_month":"Coupon month",
   "risk_low":"Low","risk_moderate":"Moderate","risk_high":"High","na":"n/a","monthly":"Monthly","quarterly":"Quarterly","semiannual":"Semiannual","annual":"Annual",
-  "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
+  "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","type_share":"Shares","type_bond":"Bonds","type_etf":"ETFs","type_currency":"Currencies","type_future":"Futures","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
   "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","language":"Language"
 }
