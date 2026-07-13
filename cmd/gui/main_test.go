@@ -2,11 +2,72 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
+	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 	"github.com/dmitry/tinvest-snapshot/internal/config"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 )
+
+func TestColumnHeadersAreLocalized(t *testing.T) {
+	var fields []string
+	fields = append(fields, portfolioFields...)
+	fields = append(fields, operationFields...)
+	fields = append(fields, instrumentFields...)
+	for _, lang := range []string{"ru", "en"} {
+		d := &desktop{cfg: &config.Config{Language: lang}}
+		d.loadText()
+		for _, f := range fields {
+			key := "col_" + f
+			if d.tr(key) == key {
+				t.Errorf("%s: no translation for %s", lang, key)
+			}
+		}
+	}
+}
+
+func TestTargetCurrencyRoundTrip(t *testing.T) {
+	d := &desktop{cfg: &config.Config{Language: "ru"}}
+	d.loadText()
+	if got := targetCurrencyValue(d.targetCurrencyLabel(""), d); got != "" {
+		t.Errorf("empty target currency must stay empty, got %q", got)
+	}
+	for _, code := range baseCurrencies {
+		if got := targetCurrencyValue(d.targetCurrencyLabel(code), d); got != code {
+			t.Errorf("round trip %q -> %q", code, got)
+		}
+	}
+}
+
+func TestCurrencyFilterTreatsAllAsNoFilter(t *testing.T) {
+	d := &desktop{cfg: &config.Config{Language: "ru"}}
+	d.loadText()
+	for _, label := range []string{"", d.tr("all")} {
+		if got := currencyFilter(label, d); got != "" {
+			t.Errorf("currencyFilter(%q) = %q, want empty", label, got)
+		}
+	}
+	if got := currencyFilter("USD", d); got != "usd" {
+		t.Errorf(`currencyFilter("USD") = %q, want "usd"`, got)
+	}
+}
+
+func TestCurrencyOptionsCoverCatalogAndConfigured(t *testing.T) {
+	cache := &catalog.Cache{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}
+	options := currencyOptions(cache, "gel")
+	for _, want := range []string{"RUB", "USD", "SEK", "GEL"} {
+		if !slices.Contains(options, want) {
+			t.Errorf("currencyOptions missing %s: %v", want, options)
+		}
+	}
+	if slices.Contains(options, "") {
+		t.Errorf("currencyOptions must not offer an empty code: %v", options)
+	}
+	if !slices.IsSorted(options) {
+		t.Errorf("currencyOptions must be sorted: %v", options)
+	}
+}
 
 func TestTypeAPIRoundTripsLocalizedLabels(t *testing.T) {
 	for _, lang := range []string{"ru", "en"} {
