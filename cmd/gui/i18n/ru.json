@@ -9,7 +9,7 @@
   "fixed":"Фиксированный","floating":"Флоатер","yes":"Да","no":"Нет","type_share":"Акции","type_bond":"Облигации","type_etf":"Фонды (ETF)","type_currency":"Валюты","type_future":"Фьючерсы","catalog_updated":"Справочник обновлён","free_cash":"Свободные деньги","account_total":"Итог счёта","all_accounts":"Все счета","grand_total":"Общий итог","grand_converted":"Общий итог (пересчёт)",
   "mode":"Режим API","token_env":"Переменная токена","token_value":"Токен в конфиге","reports":"Каталог отчётов","target_currency":"Целевая валюта","retries":"Повторы","retry_delay":"Задержка повтора, мс","auto_refresh":"Автообновление, мин (0 = выкл.)","catalog_ttl":"Срок кэша, ч","language":"Язык",
 
-  "copy_cell":"Копировать значение",
+  "copy_cell":"Копировать значение","open_on_site":"Открыть на сайте Т-Инвестиции","close":"Закрыть",
 
   "col_row_kind":"Тип строки","col_account":"Счёт","col_account_id":"ID счёта","col_account_name":"Счёт","col_type":"Тип","col_instrument_type":"Тип инструмента","col_operation_type":"Тип операции",
   "col_amortization":"Амортизация","col_amortization_dates":"Даты амортизации","col_offer_dates":"Оферты (досрочное погашение)",

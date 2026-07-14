@@ -9,7 +9,7 @@
   "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","type_share":"Shares","type_bond":"Bonds","type_etf":"ETFs","type_currency":"Currencies","type_future":"Futures","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
   "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","language":"Language",
 
-  "copy_cell":"Copy value",
+  "copy_cell":"Copy value","open_on_site":"Open on T-Invest website","close":"Close",
 
   "col_row_kind":"Row kind","col_account":"Account","col_account_id":"Account ID","col_account_name":"Account","col_type":"Type","col_instrument_type":"Instrument type","col_operation_type":"Operation type",
   "col_amortization":"Amortization","col_amortization_dates":"Amortization dates","col_offer_dates":"Calls (early redemption)",

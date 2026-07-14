@@ -107,20 +107,29 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 		PaymentCurrency: it.Payment.Currency,
 		State:           operationStateName(it.State),
 	}
-	if it.InstrumentUID == "" {
-		return op
-	}
-	instr, ok := cache[it.InstrumentUID]
-	if !ok {
-		if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
-			instr = got
-		} else {
-			c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+	if it.InstrumentUID != "" {
+		instr, ok := cache[it.InstrumentUID]
+		if !ok {
+			if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
+				instr = got
+			} else {
+				c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+			}
+			cache[it.InstrumentUID] = instr
 		}
-		cache[it.InstrumentUID] = instr
+		if instr != nil {
+			op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
+		}
 	}
-	if instr != nil {
-		op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
+	// When InstrumentByUID fails or InstrumentUID is absent, fall back to the
+	// operation item's own Name (which per T-Invest API is the instrument name,
+	// see operationItem doc) and Figi — so coupon/tax/dividend operations still
+	// carry the instrument identity for display and URL linking.
+	if op.Ticker == "" && it.Figi != "" {
+		op.Ticker = it.Figi // FIGI is better than nothing in the ticker column
+	}
+	if op.Name == "" && it.Name != "" {
+		op.Name = it.Name
 	}
 	return op
 }

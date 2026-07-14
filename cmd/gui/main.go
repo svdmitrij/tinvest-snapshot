@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,6 +72,9 @@ type grid struct {
 	collapsed              map[string]bool
 	onRow                  func([]string)
 	tr                     func(string) string
+	// onURLOpen is called when the user left-clicks a cell that holds a
+	// ticker, name or ISIN value, with the cell value and the column key.
+	onURLOpen func(value, key string)
 }
 
 func main() {
@@ -194,9 +199,9 @@ func (l widthFraction) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 }
 
 func (d *desktop) build() {
-	d.portfolio = newGrid(d.window, d.tr)
-	d.operations = newGrid(d.window, d.tr)
-	d.instruments = newGrid(d.window, d.tr)
+	d.portfolio = newGrid(d.window, d.tr, d)
+	d.operations = newGrid(d.window, d.tr, d)
+	d.instruments = newGrid(d.window, d.tr, d)
 	d.from = widget.NewDateEntry()
 	d.to = widget.NewDateEntry()
 	d.status = widget.NewLabel("")
@@ -281,7 +286,9 @@ type tableCell struct {
 	background *canvas.Rectangle
 	label      *widget.Label
 	value      string
+	key        string // raw column field name (e.g. "ticker", "isin", "name")
 	tr         func(string) string
+	onURLOpen  func(value, key string)
 }
 
 func newTableCell(tr func(string) string) *tableCell {
@@ -297,8 +304,9 @@ func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(container.NewStack(c.background, c.label))
 }
 
-func (c *tableCell) set(value string, even bool) {
+func (c *tableCell) set(value string, key string, even bool) {
 	c.value = value
+	c.key = key
 	c.label.SetText(value)
 	fill := zebraOdd
 	if even {
@@ -307,6 +315,17 @@ func (c *tableCell) set(value string, even bool) {
 	if c.background.FillColor != fill {
 		c.background.FillColor = fill
 		c.background.Refresh()
+	}
+}
+
+// Tapped opens the instrument page on T-Bank when the cell holds a ticker,
+// ISIN or instrument name, and the caller has provided an onURLOpen handler.
+func (c *tableCell) Tapped(e *fyne.PointEvent) {
+	if c.onURLOpen != nil && c.value != "" && c.value != model.NA {
+		if c.key == "ticker" || c.key == "isin" || c.key == "name" || c.key == "figi" {
+			c.onURLOpen(c.value, c.key)
+			return
+		}
 	}
 }
 
@@ -324,8 +343,9 @@ func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", copyItem), canvas, e.AbsolutePosition)
 }
 
-func newGrid(w fyne.Window, tr func(string) string) *grid {
+func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr}
+	g.onURLOpen = func(value, key string) { openInstrumentURL(d, value, key) }
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
@@ -334,15 +354,20 @@ func newGrid(w fyne.Window, tr func(string) string) *grid {
 	g.filterValue.SetPlaceHolder(tr("value"))
 	g.filterValue.OnChanged = func(string) { g.apply() }
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
-		return newTableCell(tr)
+		c := newTableCell(tr)
+		c.onURLOpen = g.onURLOpen
+		return c
 	}, func(id widget.TableCellID, o fyne.CanvasObject) {
 		g.mu.RLock()
 		defer g.mu.RUnlock()
-		value := ""
+		value, key := "", ""
 		if id.Row < len(g.visible) && id.Col < len(g.visible[id.Row]) {
 			value = g.visible[id.Row][id.Col]
 		}
-		o.(*tableCell).set(value, id.Row%2 == 0)
+		if id.Col >= 0 && id.Col < len(g.columns) {
+			key = g.columns[id.Col]
+		}
+		o.(*tableCell).set(value, key, id.Row%2 == 0)
 	})
 	g.table.ShowHeaderRow = true
 	g.table.CreateHeader = func() fyne.CanvasObject { return widget.NewButton("", nil) }
@@ -443,10 +468,19 @@ func (g *grid) apply() {
 	}
 	if col >= 0 {
 		sort.SliceStable(rows, func(i, j int) bool {
-			if g.desc {
-				return rows[i][col] > rows[j][col]
+			a, b := rows[i][col], rows[j][col]
+			fa, ea := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(a, ",", "."), " ", ""), 64)
+			fb, eb := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(b, ",", "."), " ", ""), 64)
+			if ea == nil && eb == nil {
+				if g.desc {
+					return fa > fb
+				}
+				return fa < fb
 			}
-			return rows[i][col] < rows[j][col]
+			if g.desc {
+				return a > b
+			}
+			return a < b
 		})
 	}
 	g.dataView = append([][]string(nil), rows...)
@@ -757,22 +791,90 @@ func (d *desktop) showInstrumentCard(row []string) {
 				return nil
 			}
 			_, rows := instrumentRows([]catalog.Instrument{item}, d)
-			fyne.Do(func() { d.showCardText(rows[0]) })
+			fyne.Do(func() { d.showCardDialog(rows[0]) })
 			return nil
 		})
 		return
 	}
-	d.showCardText(row)
+	d.showCardDialog(row)
 }
 
-func (d *desktop) showCardText(row []string) {
+// instrumentURL builds a link to the instrument page on the T-Bank website.
+// Prefers ticker for search, falls back to FIGI.
+func instrumentURL(row []string) string {
+	ticker := fieldOf(row, "ticker")
+	if strings.TrimSpace(ticker) != "" && ticker != model.NA {
+		return "https://www.tbank.ru/invest/search/?query=" + ticker
+	}
+	figi := fieldOf(row, "figi")
+	if strings.TrimSpace(figi) != "" && figi != model.NA {
+		return "https://www.tbank.ru/invest/catalog/" + figi + "/"
+	}
+	return ""
+}
+
+// openInstrumentURL opens the T-Bank instrument page in the default browser.
+func openInstrumentURL(d *desktop, value, key string) {
+	url := ""
+	if key == "ticker" || key == "name" {
+		url = "https://www.tbank.ru/invest/search/?query=" + value
+	} else if key == "isin" {
+		url = "https://www.tbank.ru/invest/search/?query=" + value
+	} else if key == "figi" {
+		url = "https://www.tbank.ru/invest/catalog/" + value + "/"
+	}
+	if url == "" {
+		return
+	}
+	go func() {
+		var cmd string
+		var args []string
+		switch runtime.GOOS {
+		case "linux":
+			cmd = "xdg-open"
+			args = []string{url}
+		case "windows":
+			cmd = "rundll32"
+			args = []string{"url.dll,FileProtocolHandler", url}
+		default:
+			return
+		}
+		_ = exec.Command(cmd, args...).Start()
+	}()
+}
+
+// showCardDialog displays the instrument details in a custom dialog with a
+// clickable link to the T-Bank instrument page.
+func (d *desktop) showCardDialog(row []string) {
+	url := instrumentURL(row)
 	var b strings.Builder
 	for i, value := range row {
 		if i < len(d.instruments.columns) {
 			fmt.Fprintf(&b, "%s: %s\n", d.instruments.columns[i], value)
 		}
 	}
-	dialog.ShowInformation(d.tr("details"), b.String(), d.window)
+	label := widget.NewLabel(b.String())
+	content := container.NewVBox(label)
+	if url != "" {
+		link := widget.NewHyperlink(d.tr("open_on_site"), nil)
+		link.OnTapped = func() {
+			go func() {
+				var cmd string
+				var args []string
+				switch runtime.GOOS {
+				case "linux":
+					cmd = "xdg-open"
+					args = []string{url}
+				case "windows":
+					cmd = "rundll32"
+					args = []string{"url.dll,FileProtocolHandler", url}
+				}
+				_ = exec.Command(cmd, args...).Start()
+			}()
+		}
+		content.Add(link)
+	}
+	dialog.ShowCustom(d.tr("details"), d.tr("close"), content, d.window)
 }
 
 // fieldOf reads a value out of an instrument row by its raw field name.
