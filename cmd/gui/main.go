@@ -706,7 +706,7 @@ func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]str
 		row := pad("account_total", a.Name, a.ID, "total", model.NA, model.NA, tr("account_total"), a.Total.Currency)
 		row[25] = a.Total.Amount
 		if a.TotalConverted != nil {
-			row[26], row[27], row[28] = a.TotalConverted.Amount, a.TotalConverted.Currency, a.TotalConverted.Rate
+			row[26], row[27], row[28] = a.TotalConverted.Amount, a.TotalConverted.Currency, naOr(a.TotalConverted.Rate)
 		}
 		rows = append(rows, row)
 	}
@@ -717,10 +717,19 @@ func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]str
 	}
 	if s.GrandConverted != nil {
 		row := pad("grand_converted", tr("all_accounts"), model.NA, "total", model.NA, model.NA, tr("grand_converted"), s.GrandConverted.Currency)
-		row[26], row[27], row[28] = s.GrandConverted.Amount, s.GrandConverted.Currency, s.GrandConverted.Rate
+		// The rate is absent when the grand total mixed several currencies.
+		row[26], row[27], row[28] = s.GrandConverted.Amount, s.GrandConverted.Currency, naOr(s.GrandConverted.Rate)
 		rows = append(rows, row)
 	}
 	return cols, rows
+}
+
+// naOr keeps empty optional values readable in the table.
+func naOr(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return model.NA
+	}
+	return value
 }
 func operationRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
 	cols := trCols(tr, operationFields...)
