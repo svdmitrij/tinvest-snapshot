@@ -320,10 +320,15 @@ func (c *tableCell) set(value string, key string, even bool) {
 
 // Tapped opens the instrument page on T-Bank when the cell holds a ticker,
 // ISIN or instrument name, and the caller has provided an onURLOpen handler.
+// g.columns stores localized headers (e.g. "Тикер" for ru, "Ticker" for en),
+// so we match through tr("col_"+rawKey) which produces the same localized form.
 func (c *tableCell) Tapped(e *fyne.PointEvent) {
-	if c.onURLOpen != nil && c.value != "" && c.value != model.NA {
-		if c.key == "ticker" || c.key == "isin" || c.key == "name" || c.key == "figi" {
-			c.onURLOpen(c.value, c.key)
+	if c.onURLOpen == nil || c.value == "" || c.value == model.NA || c.tr == nil {
+		return
+	}
+	for _, raw := range []string{"ticker", "isin", "name", "figi"} {
+		if c.key == c.tr("col_"+raw) {
+			c.onURLOpen(c.value, raw)
 			return
 		}
 	}

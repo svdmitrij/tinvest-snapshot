@@ -121,13 +121,10 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 			op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
 		}
 	}
-	// When InstrumentByUID fails or InstrumentUID is absent, fall back to the
-	// operation item's own Name (which per T-Invest API is the instrument name,
-	// see operationItem doc) and Figi — so coupon/tax/dividend operations still
-	// carry the instrument identity for display and URL linking.
-	if op.Ticker == "" && it.Figi != "" {
-		op.Ticker = it.Figi // FIGI is better than nothing in the ticker column
-	}
+	// When InstrumentByUID fails or InstrumentUID is absent, the API operation
+	// item's own Name field holds the instrument name (per T-Invest API docs).
+	// FIGI is a different identifier, not a ticker — it must not be substituted
+	// into the ticker column; users looking up a ticker would be misled.
 	if op.Name == "" && it.Name != "" {
 		op.Name = it.Name
 	}
