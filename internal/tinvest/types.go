@@ -131,11 +131,36 @@ type apiInstrument struct {
 	RiskLevel             string      `json:"riskLevel"`
 	CouponQuantityPerYear int         `json:"couponQuantityPerYear"`
 	FloatingCouponFlag    bool        `json:"floatingCouponFlag"`
+	AmortizationFlag      bool        `json:"amortizationFlag"`
 	Nominal               money.Money `json:"nominal"`
 	MaturityDate          string      `json:"maturityDate"`
 }
 type instrumentsResponse struct {
 	Instruments []apiInstrument `json:"instruments"`
+}
+
+// bondEventsRequest must carry an explicit window: without from/to the API
+// returns only the events of the nearest period, so a long amortization
+// schedule comes back empty.
+type bondEventsRequest struct {
+	InstrumentID string `json:"instrumentId"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+}
+
+// bondEvent mirrors GetBondEvents items. The API exposes no amortization event
+// type: partial redemptions appear as several EVENT_TYPE_MTY events, each
+// paying back a part of the nominal, while a plain bond has a single one.
+// Calls (оферты) come as EVENT_TYPE_CALL.
+type bondEvent struct {
+	EventType  string      `json:"eventType"`
+	EventDate  string      `json:"eventDate"`
+	PayDate    string      `json:"payDate"`
+	PayOneBond money.Money `json:"payOneBond"`
+}
+
+type bondEventsResponse struct {
+	Events []bondEvent `json:"events"`
 }
 
 type lastPricesRequest struct {
@@ -160,13 +185,15 @@ type operationsByCursorRequest struct {
 	Limit     int32  `json:"limit,omitempty"`
 }
 
-// operationItem mirrors GetOperationsByCursor items. Name is the API's
-// human-readable operation label; Type is the raw enum used as a fallback.
+// operationItem mirrors GetOperationsByCursor items. Type is the operation
+// enum; Description is the API's human-readable sentence about the operation.
+// Name is the *instrument* name, not an operation label.
 type operationItem struct {
 	ID             string      `json:"id"`
 	Date           string      `json:"date"`
 	Type           string      `json:"type"`
 	Name           string      `json:"name"`
+	Description    string      `json:"description"`
 	State          string      `json:"state"`
 	InstrumentUID  string      `json:"instrumentUid"`
 	Figi           string      `json:"figi"`

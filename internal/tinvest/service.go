@@ -2,6 +2,7 @@ package tinvest
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrume
 			return nil, err
 		}
 		for _, v := range resp.Instruments {
-			x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, MaturityDate: v.MaturityDate}
+			x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate}
 			if v.Nominal.Currency != "" {
 				x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
 			}
@@ -56,6 +57,11 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 						}
 					}
 				}
+				// A bond may amortize over decades: ask for the whole life span,
+				// not the default nearest-period window.
+				if events, e := c.BondEvents(ctx, out[i].UID, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
+					out[i].AmortizationDates, out[i].OfferDates = redemptionSchedule(events)
+				}
 			} else if out[i].Type == "share" {
 				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
 				out[i].HasDividends = e == nil && len(d) > 0
@@ -67,6 +73,46 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 		<-done
 	}
 	return out
+}
+
+// redemptionSchedule splits bond events into the amortization schedule and the
+// call (оферта) dates. The API has no amortization event type: an amortized
+// bond repays its nominal through several EVENT_TYPE_MTY events, so more than
+// one of them *is* the schedule, while a single one is just the final maturity.
+func redemptionSchedule(events []bondEvent) (amortization, offers []string) {
+	var redemptions []string
+	for _, e := range events {
+		date := eventDay(e)
+		if date == "" {
+			continue
+		}
+		switch e.EventType {
+		case "EVENT_TYPE_MTY":
+			redemptions = append(redemptions, date)
+		case "EVENT_TYPE_CALL":
+			offers = append(offers, date)
+		}
+	}
+	sort.Strings(redemptions)
+	sort.Strings(offers)
+	if len(redemptions) > 1 {
+		amortization = redemptions
+	}
+	return amortization, offers
+}
+
+func eventDay(e bondEvent) string {
+	raw := e.PayDate
+	if raw == "" {
+		raw = e.EventDate
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if len(raw) >= 10 {
+		return raw[:10]
+	}
+	return ""
 }
 
 func parseAmount(s string) float64 {
@@ -132,6 +178,17 @@ func (c *Client) Coupons(ctx context.Context, instrumentID string, from, to time
 	req := couponsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
 	var resp couponsResponse
 	if err := c.call(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Events, nil
+}
+
+// BondEvents returns the bond's lifecycle events (coupons, calls, redemptions)
+// within [from, to].
+func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to time.Time) ([]bondEvent, error) {
+	req := bondEventsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
+	var resp bondEventsResponse
+	if err := c.call(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil

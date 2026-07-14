@@ -31,6 +31,12 @@ type Instrument struct {
 	Enriched        bool     `json:"enriched,omitempty"`
 	Nominal         string   `json:"nominal,omitempty"`
 	MaturityDate    string   `json:"maturity_date,omitempty"`
+
+	// Amortized is known from the bond directory; the schedules below are only
+	// filled once the instrument is enriched with its bond events.
+	Amortized         bool     `json:"amortized,omitempty"`
+	AmortizationDates []string `json:"amortization_dates,omitempty"`
+	OfferDates        []string `json:"offer_dates,omitempty"`
 }
 
 type Cache struct {

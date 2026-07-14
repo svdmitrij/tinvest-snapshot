@@ -4,11 +4,56 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 	"github.com/dmitry/tinvest-snapshot/internal/config"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 )
+
+func TestInstrumentRowsShowBondSchedules(t *testing.T) {
+	d := &desktop{cfg: &config.Config{Language: "ru"}}
+	d.loadText()
+	items := []catalog.Instrument{
+		{Type: "bond", UID: "u1", Amortized: true,
+			MaturityDate:      "2027-04-11T00:00:00Z",
+			AmortizationDates: []string{"2026-06-25", "2026-12-22"},
+			OfferDates:        []string{"2027-01-23"}},
+		{Type: "bond", UID: "u2"},
+	}
+	_, rows := instrumentRows(items, d)
+
+	amortized, plain := rows[0], rows[1]
+	if got := fieldOf(amortized, "maturity_date"); got != "2027-04-11" {
+		t.Errorf("maturity date = %q, want the day only", got)
+	}
+	if got := fieldOf(amortized, "amortization"); got != d.tr("yes") {
+		t.Errorf("amortization = %q, want yes", got)
+	}
+	if got := fieldOf(amortized, "amortization_dates"); got != "2026-06-25, 2026-12-22" {
+		t.Errorf("amortization dates = %q", got)
+	}
+	if got := fieldOf(amortized, "offer_dates"); got != "2027-01-23" {
+		t.Errorf("offer dates = %q", got)
+	}
+
+	if got := fieldOf(plain, "amortization"); got != d.tr("no") {
+		t.Errorf("plain bond amortization = %q, want no", got)
+	}
+	for _, field := range []string{"amortization_dates", "offer_dates", "maturity_date"} {
+		if got := fieldOf(plain, field); got != d.tr("na") {
+			t.Errorf("plain bond %s = %q, want н/д", field, got)
+		}
+	}
+}
+
+// The save dialog must pre-fill the name the exporter used to generate itself.
+func TestDefaultViewNameKeepsNamingRule(t *testing.T) {
+	got := defaultViewName(time.Date(2026, 7, 14, 15, 4, 5, 0, time.UTC))
+	if got != "table_20260714_150405.csv" {
+		t.Errorf("defaultViewName = %q", got)
+	}
+}
 
 func TestColumnHeadersAreLocalized(t *testing.T) {
 	var fields []string

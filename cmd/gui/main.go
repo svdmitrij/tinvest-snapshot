@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,9 +19,12 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 	"github.com/dmitry/tinvest-snapshot/internal/config"
@@ -78,6 +82,7 @@ func main() {
 	}
 	cacheRoot, _ := os.UserCacheDir()
 	a := app.NewWithID("ru.dmitry.tinvest-snapshot")
+	a.Settings().SetTheme(calmTheme{theme.DefaultTheme()})
 	w := a.NewWindow("T-Invest")
 	d := &desktop{window: w, configPath: *configPath, cachePath: filepath.Join(cacheRoot, "tinvest-snapshot", "catalog.json"), cfg: cfg}
 	d.cache, _ = catalog.Load(d.cachePath)
@@ -101,6 +106,10 @@ func (d *desktop) tr(k string) string {
 	}
 	return k
 }
+
+// dateSize widens the date pickers: at their natural width the chosen date was
+// clipped and unreadable.
+var dateSize = fyne.NewSize(210, 38)
 
 // labeled puts a caption above a control so its purpose is visible in the UI.
 func labeled(caption string, w fyne.CanvasObject) fyne.CanvasObject {
@@ -191,12 +200,15 @@ func (d *desktop) build() {
 	d.from = widget.NewDateEntry()
 	d.to = widget.NewDateEntry()
 	d.status = widget.NewLabel("")
-	refresh := widget.NewButton(d.tr("refresh"), func() { d.refreshPortfolio() })
-	exportAll := widget.NewButton(d.tr("export_all"), func() { d.exportAll() })
-	portfolioBar := container.NewHBox(refresh, exportAll, widget.NewButton(d.tr("export"), func() { d.portfolio.exportView(d.cfg.ReportsDir) }))
-	operationsBar := container.NewHBox(labeled(d.tr("from"), d.from), labeled(d.tr("to"), d.to),
-		widget.NewButton(d.tr("refresh"), func() { d.refreshPortfolio() }),
-		widget.NewButton(d.tr("export"), func() { d.operations.exportView(d.cfg.ReportsDir) }))
+	portfolioBar := container.NewHBox(
+		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
+		button(d.tr("export_all"), widget.MediumImportance, func() { d.exportAll() }),
+		button(d.tr("export"), widget.MediumImportance, func() { d.portfolio.exportView(d.cfg.ReportsDir) }))
+	operationsBar := container.NewHBox(
+		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
+		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
+		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
+		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }))
 	searchTab := d.instrumentTab()
 	tabs := container.NewAppTabs(container.NewTabItem(d.tr("portfolio"), container.NewBorder(portfolioBar, nil, nil, nil, d.portfolio.root)), container.NewTabItem(d.tr("operations"), container.NewBorder(operationsBar, nil, nil, nil, d.operations.root)), container.NewTabItem(d.tr("instruments"), searchTab), container.NewTabItem(d.tr("settings"), d.settingsTab()))
 	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, tabs))
@@ -233,6 +245,85 @@ func (d *desktop) startAutoRefresh() {
 	}(time.Duration(d.cfg.AutoRefreshMinutes) * time.Minute)
 }
 
+// calmTheme keeps Fyne's light base but replaces the loud default accent with a
+// muted green, so buttons, selection and the zebra rows read as one quiet
+// palette. The light variant is pinned: the zebra colours are light by design.
+type calmTheme struct{ fyne.Theme }
+
+func (t calmTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNamePrimary:
+		return color.NRGBA{R: 0x4C, G: 0x7A, B: 0x5E, A: 0xFF}
+	case theme.ColorNameHover:
+		return color.NRGBA{R: 0xDA, G: 0xE8, B: 0xDD, A: 0xFF}
+	}
+	return t.Theme.Color(name, theme.VariantLight)
+}
+
+// button gives every action the same muted styling; importance marks the
+// primary action of a bar rather than adding another colour.
+func button(label string, importance widget.Importance, tapped func()) *widget.Button {
+	b := widget.NewButton(label, tapped)
+	b.Importance = importance
+	return b
+}
+
+// Zebra striping requested at acceptance: even rows light green, odd rows white.
+var (
+	zebraEven = color.NRGBA{R: 0xE8, G: 0xF5, B: 0xE9, A: 0xFF}
+	zebraOdd  = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+)
+
+// tableCell draws one table cell: a striped background plus the value, and
+// offers the value for copying through a right-click menu.
+type tableCell struct {
+	widget.BaseWidget
+	background *canvas.Rectangle
+	label      *widget.Label
+	value      string
+	tr         func(string) string
+}
+
+func newTableCell(tr func(string) string) *tableCell {
+	c := &tableCell{tr: tr}
+	c.background = canvas.NewRectangle(zebraOdd)
+	c.label = widget.NewLabel("")
+	c.label.Truncation = fyne.TextTruncateEllipsis
+	c.ExtendBaseWidget(c)
+	return c
+}
+
+func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(container.NewStack(c.background, c.label))
+}
+
+func (c *tableCell) set(value string, even bool) {
+	c.value = value
+	c.label.SetText(value)
+	fill := zebraOdd
+	if even {
+		fill = zebraEven
+	}
+	if c.background.FillColor != fill {
+		c.background.FillColor = fill
+		c.background.Refresh()
+	}
+}
+
+func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
+	if c.value == "" {
+		return
+	}
+	copyItem := fyne.NewMenuItem(c.tr("copy_cell"), func() {
+		fyne.CurrentApp().Clipboard().SetContent(c.value)
+	})
+	canvas := fyne.CurrentApp().Driver().CanvasForObject(c)
+	if canvas == nil {
+		return
+	}
+	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", copyItem), canvas, e.AbsolutePosition)
+}
+
 func newGrid(w fyne.Window, tr func(string) string) *grid {
 	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr}
 	g.search = widget.NewEntry()
@@ -243,15 +334,15 @@ func newGrid(w fyne.Window, tr func(string) string) *grid {
 	g.filterValue.SetPlaceHolder(tr("value"))
 	g.filterValue.OnChanged = func(string) { g.apply() }
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
-		label := widget.NewLabel("")
-		label.Truncation = fyne.TextTruncateEllipsis
-		return label
+		return newTableCell(tr)
 	}, func(id widget.TableCellID, o fyne.CanvasObject) {
 		g.mu.RLock()
 		defer g.mu.RUnlock()
+		value := ""
 		if id.Row < len(g.visible) && id.Col < len(g.visible[id.Row]) {
-			o.(*widget.Label).SetText(g.visible[id.Row][id.Col])
+			value = g.visible[id.Row][id.Col]
 		}
+		o.(*tableCell).set(value, id.Row%2 == 0)
 	})
 	g.table.ShowHeaderRow = true
 	g.table.CreateHeader = func() fyne.CanvasObject { return widget.NewButton("", nil) }
@@ -413,19 +504,58 @@ func (g *grid) findNext() {
 	}
 	g.mu.Unlock()
 }
+
+// defaultViewName keeps the previous naming rule as the pre-filled suggestion
+// in the save dialog.
+func defaultViewName(now time.Time) string {
+	return "table_" + now.Format("20060102_150405") + ".csv"
+}
+
+// exportView asks where to save, then writes the current view next to the
+// chosen name as .csv and .xlsx.
 func (g *grid) exportView(dir string) {
+	save := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, g.window)
+			return
+		}
+		if w == nil {
+			return // cancelled
+		}
+		path := w.URI().Path()
+		_ = w.Close()
+		base := strings.TrimSuffix(path, filepath.Ext(path))
+		if e := g.writeView(base); e != nil {
+			dialog.ShowError(e, g.window)
+			return
+		}
+		dialog.ShowInformation(g.tr("export_title"), base+".csv\n"+base+".xlsx", g.window)
+	}, g.window)
+	save.SetFileName(defaultViewName(time.Now()))
+	if lister, e := listerFor(dir); e == nil {
+		save.SetLocation(lister)
+	}
+	save.Show()
+}
+
+// listerFor resolves a directory path into a dialog start location.
+func listerFor(dir string) (fyne.ListableURI, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("no directory")
+	}
+	if e := os.MkdirAll(dir, 0755); e != nil {
+		return nil, e
+	}
+	return storage.ListerForURI(storage.NewFileURI(dir))
+}
+
+func (g *grid) writeView(base string) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if e := os.MkdirAll(dir, 0755); e != nil {
-		dialog.ShowError(e, g.window)
-		return
-	}
-	base := filepath.Join(dir, "table_"+time.Now().Format("20060102_150405"))
 	csvPath, xlsxPath := base+".csv", base+".xlsx"
 	f, e := os.Create(csvPath)
 	if e != nil {
-		dialog.ShowError(e, g.window)
-		return
+		return e
 	}
 	w := csv.NewWriter(f)
 	_ = w.Write(g.columns)
@@ -436,8 +566,7 @@ func (g *grid) exportView(dir string) {
 		e = ce
 	}
 	if e != nil {
-		dialog.ShowError(e, g.window)
-		return
+		return e
 	}
 	x := excelize.NewFile()
 	defer x.Close()
@@ -450,11 +579,7 @@ func (g *grid) exportView(dir string) {
 			_ = x.SetCellStr(sheet, cell, value)
 		}
 	}
-	if e = x.SaveAs(xlsxPath); e != nil {
-		dialog.ShowError(e, g.window)
-		return
-	}
-	dialog.ShowInformation(g.tr("export_title"), csvPath+"\n"+xlsxPath, g.window)
+	return x.SaveAs(xlsxPath)
 }
 
 func (d *desktop) client() (*tinvest.Client, error) {
@@ -518,19 +643,33 @@ func (d *desktop) exportAll() {
 		dialog.ShowError(fmt.Errorf("%s", d.tr("refresh_first")), d.window)
 		return
 	}
-	paths, e := report.Write(d.cfg.ReportsDir, time.Now(), snap)
-	if e != nil {
-		dialog.ShowError(e, d.window)
-		return
+	// The report set keeps its own file naming, so only the directory is asked.
+	pick := dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
+		if err != nil {
+			dialog.ShowError(err, d.window)
+			return
+		}
+		if dir == nil {
+			return // cancelled
+		}
+		paths, e := report.Write(dir.Path(), time.Now(), snap)
+		if e != nil {
+			dialog.ShowError(e, d.window)
+			return
+		}
+		dialog.ShowInformation(d.tr("export_title"), strings.Join(paths.All(), "\n"), d.window)
+	}, d.window)
+	if lister, e := listerFor(d.cfg.ReportsDir); e == nil {
+		pick.SetLocation(lister)
 	}
-	dialog.ShowInformation(d.tr("export_title"), strings.Join(paths.All(), "\n"), d.window)
+	pick.Show()
 }
 
 var portfolioFields = []string{"row_kind", "account", "account_id", "type", "ticker", "isin", "name", "currency", "quantity", "avg_price", "current_price", "current_value", "pnl_abs", "pnl_pct", "coupon_rate_pct", "current_yield", "yield_to_maturity", "coupon_frequency", "next_coupon_date", "next_coupon_amount", "issuer_rating", "last_dividend_amount", "dividend_frequency", "next_payment_date", "next_payment_amount", "total_amount", "converted_amount", "converted_currency", "conversion_rate"}
 
-var operationFields = []string{"id", "account_id", "account_name", "datetime", "type", "instrument_type", "ticker", "isin", "name", "quantity", "payment_amount", "payment_currency", "state"}
+var operationFields = []string{"id", "account_id", "account_name", "datetime", "operation_type", "instrument_type", "ticker", "isin", "name", "quantity", "payment_amount", "payment_currency", "state"}
 
-var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "uid", "figi"}
+var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "amortization", "amortization_dates", "offer_dates", "uid", "figi"}
 
 func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
 	cols := trCols(tr, portfolioFields...)
@@ -592,16 +731,90 @@ func operationRows(s *model.Snapshot, tr func(string) string) ([]string, [][]str
 	return cols, rows
 }
 
-func (d *desktop) instrumentTab() fyne.CanvasObject {
-	d.instruments.onRow = func(row []string) {
-		var b strings.Builder
-		for i, value := range row {
-			if i < len(d.instruments.columns) {
-				fmt.Fprintf(&b, "%s: %s\n", d.instruments.columns[i], value)
+// showInstrumentCard opens the details popup. A bond whose events were never
+// fetched is enriched on the spot, so the card shows its real amortization and
+// call schedule instead of н/д.
+func (d *desktop) showInstrumentCard(row []string) {
+	uid := fieldOf(row, "uid")
+	if uid != "" && fieldOf(row, "type") == "bond" {
+		d.busy(d.tr("loading"), func() error {
+			if e := d.enrichOne(uid); e != nil {
+				return e
 			}
-		}
-		dialog.ShowInformation(d.tr("details"), b.String(), d.window)
+			d.mu.RLock()
+			item, ok := d.instrumentByUID(uid)
+			d.mu.RUnlock()
+			if !ok {
+				return nil
+			}
+			_, rows := instrumentRows([]catalog.Instrument{item}, d)
+			fyne.Do(func() { d.showCardText(rows[0]) })
+			return nil
+		})
+		return
 	}
+	d.showCardText(row)
+}
+
+func (d *desktop) showCardText(row []string) {
+	var b strings.Builder
+	for i, value := range row {
+		if i < len(d.instruments.columns) {
+			fmt.Fprintf(&b, "%s: %s\n", d.instruments.columns[i], value)
+		}
+	}
+	dialog.ShowInformation(d.tr("details"), b.String(), d.window)
+}
+
+// fieldOf reads a value out of an instrument row by its raw field name.
+func fieldOf(row []string, field string) string {
+	for i, f := range instrumentFields {
+		if f == field && i < len(row) {
+			return row[i]
+		}
+	}
+	return ""
+}
+
+func (d *desktop) instrumentByUID(uid string) (catalog.Instrument, bool) {
+	if d.cache == nil {
+		return catalog.Instrument{}, false
+	}
+	for _, i := range d.cache.Instruments {
+		if i.UID == uid {
+			return i, true
+		}
+	}
+	return catalog.Instrument{}, false
+}
+
+// enrichOne fetches the coupon/event details of a single instrument.
+func (d *desktop) enrichOne(uid string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	item, ok := d.instrumentByUID(uid)
+	if !ok || item.Enriched {
+		return nil
+	}
+	client, e := d.client()
+	if e != nil {
+		return e
+	}
+	enriched := client.EnrichCatalog(context.Background(), []catalog.Instrument{item}, time.Now())
+	if len(enriched) == 0 {
+		return nil
+	}
+	for i := range d.cache.Instruments {
+		if d.cache.Instruments[i].UID == uid {
+			d.cache.Instruments[i] = enriched[0]
+			break
+		}
+	}
+	return d.cache.Save(d.cachePath)
+}
+
+func (d *desktop) instrumentTab() fyne.CanvasObject {
+	d.instruments.onRow = func(row []string) { d.showInstrumentCard(row) }
 	typeOptions := make([]string, len(instrumentTypes))
 	for i, t := range instrumentTypes {
 		typeOptions[i] = d.tr("type_" + t)
@@ -694,9 +907,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		labeled(d.tr("rate_from"), rateFrom),
 		labeled(d.tr("rate_to"), rateTo),
 		labeled(d.tr("coupon_month"), month),
-		labeled(" ", widget.NewButton(d.tr("search"), func() { load(false) })),
-		labeled(" ", widget.NewButton(d.tr("refresh"), func() { load(true) })),
-		labeled(" ", widget.NewButton(d.tr("export"), func() { d.instruments.exportView(d.cfg.ReportsDir) })))
+		labeled(" ", button(d.tr("search"), widget.HighImportance, func() { load(false) })),
+		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
+		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
 	if d.cache != nil {
 		updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 	}
@@ -782,9 +995,44 @@ func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]strin
 		if i.HasDividends {
 			div = d.tr("yes")
 		}
-		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, risk, freq, ct, rate, i.NextCouponDate, div, i.Nominal, i.MaturityDate, i.UID, i.FIGI})
+		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, risk, freq, ct, rate,
+			naIfEmpty(i.NextCouponDate, d), div, naIfEmpty(i.Nominal, d), maturityDay(i.MaturityDate, d),
+			amortizationLabel(i, d), dateList(i.AmortizationDates, d), dateList(i.OfferDates, d), i.UID, i.FIGI})
 	}
 	return cols, rows
+}
+
+func naIfEmpty(value string, d *desktop) string {
+	if strings.TrimSpace(value) == "" {
+		return d.tr("na")
+	}
+	return value
+}
+
+func maturityDay(raw string, d *desktop) string {
+	if t, e := time.Parse(time.RFC3339, raw); e == nil {
+		return t.Format("2006-01-02")
+	}
+	return naIfEmpty(raw, d)
+}
+
+// amortizationLabel answers "does this bond amortize?" from the directory flag;
+// the schedule itself only arrives with enrichment.
+func amortizationLabel(i catalog.Instrument, d *desktop) string {
+	if i.Type != "bond" {
+		return d.tr("na")
+	}
+	if i.Amortized {
+		return d.tr("yes")
+	}
+	return d.tr("no")
+}
+
+func dateList(dates []string, d *desktop) string {
+	if len(dates) == 0 {
+		return d.tr("na")
+	}
+	return strings.Join(dates, ", ")
 }
 
 func (d *desktop) settingsTab() fyne.CanvasObject {
