@@ -17,4 +17,5 @@ tinvest-snapshot.exe
 
 # Transfer artifacts
 *.bundle
-gui
+# Root-level GUI binary artifact (not the cmd/gui/ source tree)
+/gui
