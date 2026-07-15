@@ -40,8 +40,11 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-//go:embed i18n/*.json
+//go:embed i18n/*.json config.example.json
 var translations embed.FS
+
+//go:embed config.example.json
+var embeddedConfigBytes []byte
 
 type desktop struct {
 	mu                                 sync.RWMutex
@@ -77,21 +80,6 @@ type grid struct {
 	tr                     func(string) string
 	fontScale              int // percent (60–200), default 100
 }
-
-// embeddedConfigTemplate is the built-in default config (mirrors config.example.json
-// without a token, mode=sandbox, token_env=TINVEST_TOKEN).
-const embeddedConfigTemplate = `{
-  "mode": "sandbox",
-  "token": "",
-  "token_env": "TINVEST_TOKEN",
-  "retries": 3,
-  "retry_delay_ms": 1000,
-  "reports_dir": "reports",
-  "target_currency": "",
-  "endpoint": "",
-  "app_name": "tinvest-snapshot"
-}
-`
 
 // resolveConfigPath finds or creates the config file. The resolution order is:
 // 1. --config flag (explicit path)
@@ -146,7 +134,7 @@ func resolveConfigPath() (string, *config.Config, error) {
 	if err := os.MkdirAll(osCfgDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("не удалось создать каталог конфигурации %s: %w", osCfgDir, err)
 	}
-	if err := os.WriteFile(osCfgPath, []byte(embeddedConfigTemplate), 0o644); err != nil {
+	if err := os.WriteFile(osCfgPath, embeddedConfigBytes, 0o644); err != nil {
 		return "", nil, fmt.Errorf("не удалось записать конфиг %s: %w", osCfgPath, err)
 	}
 	cfg, err := config.Load(osCfgPath)
@@ -159,7 +147,22 @@ func resolveConfigPath() (string, *config.Config, error) {
 func main() {
 	configPath, cfg, err := resolveConfigPath()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Show a GUI error dialog even when config resolution fails
+		// (critical for Windows: double-click launch has no console).
+		a := app.NewWithID("ru.dmitry.tinvest-snapshot")
+		w := a.NewWindow("T-Invest")
+		msg := err.Error()
+		// Keep stderr for console launches, add GUI dialog for desktop.
+		fmt.Fprintln(os.Stderr, msg)
+		w.SetContent(widget.NewLabel(""))
+		w.SetOnClosed(func() { os.Exit(2) })
+		go func() {
+			w.Show()
+			dialog.ShowCustomConfirm("T-Invest", "OK", "", widget.NewLabel(msg), func(ok bool) {
+				os.Exit(2)
+			}, w)
+		}()
+		a.Run()
 		os.Exit(2)
 	}
 	cacheRoot, _ := os.UserCacheDir()
@@ -423,14 +426,13 @@ type tableCell struct {
 	key        string // localized column header (e.g. "Тикер", "Ticker")
 	tr         func(string) string
 	onTap      func()
-	fontScale  float32
 }
 
-func newTableCell(tr func(string) string, fontScale float32) *tableCell {
-	c := &tableCell{tr: tr, fontScale: fontScale}
+func newTableCell(tr func(string) string) *tableCell {
+	c := &tableCell{tr: tr}
 	c.background = canvas.NewRectangle(zebraOdd)
 	c.text = canvas.NewText("", theme.ForegroundColor())
-	c.text.TextSize = theme.TextSize() * fontScale
+	c.text.TextSize = theme.TextSize()
 	c.ExtendBaseWidget(c)
 	return c
 }
@@ -439,11 +441,11 @@ func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text))
 }
 
-func (c *tableCell) set(value string, key string, even bool) {
+func (c *tableCell) set(value string, key string, even bool, fontScale float32) {
 	c.value = value
 	c.key = key
 	c.text.Text = value
-	c.text.TextSize = theme.TextSize() * c.fontScale
+	c.text.TextSize = theme.TextSize() * fontScale
 	c.text.Refresh()
 	fill := zebraOdd
 	if even {
@@ -487,9 +489,8 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.filterValue = widget.NewEntry()
 	g.filterValue.SetPlaceHolder(tr("value"))
 	g.filterValue.OnChanged = func(string) { g.apply() }
-	scale := float32(g.fontScale) / 100.0
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
-		return newTableCell(tr, scale)
+		return newTableCell(tr)
 	}, func(id widget.TableCellID, o fyne.CanvasObject) {
 		g.mu.RLock()
 		defer g.mu.RUnlock()
@@ -501,7 +502,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 			key = g.columns[id.Col]
 		}
 		cell := o.(*tableCell)
-		cell.set(value, key, id.Row%2 == 0)
+		cell.set(value, key, id.Row%2 == 0, float32(g.fontScale)/100.0)
 		// Wire the cell tap: for group headers toggle collapse, for data
 		// rows trigger the card popup directly — both bypass Fyne's
 		// unreliable event-bubbling chain.
@@ -836,7 +837,11 @@ func (d *desktop) refreshPortfolio() {
 		if e != nil {
 			return e
 		}
-		ops, p, e := c.CollectOperations(ctx, win.GlobalFrom, win.To)
+		ops, p, e := c.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
+			fyne.Do(func() {
+				d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total))
+			})
+		})
 		if e != nil {
 			return e
 		}

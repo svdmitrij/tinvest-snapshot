@@ -57,7 +57,7 @@ func TestCollectOperationsPaginatesAndMaps(t *testing.T) {
 
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	ops, period, err := c.CollectOperations(context.Background(), &from, to)
+	ops, period, err := c.CollectOperations(context.Background(), &from, to, nil)
 	if err != nil {
 		t.Fatalf("CollectOperations: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestCollectOperationsPerAccountOpenedDate(t *testing.T) {
 	c.Sandbox = true
 
 	to := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	_, period, err := c.CollectOperations(context.Background(), nil, to)
+	_, period, err := c.CollectOperations(context.Background(), nil, to, nil)
 	if err != nil {
 		t.Fatalf("CollectOperations: %v", err)
 	}

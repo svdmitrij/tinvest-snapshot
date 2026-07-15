@@ -60,7 +60,7 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 // the effective bounds (earliest start actually used, and to). Instrument
 // enrichment failures degrade to empty fields and never abort the run; only
 // account listing or operations retrieval failures are fatal.
-func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, to time.Time) ([]model.Operation, model.OperationsPeriod, error) {
+func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, to time.Time, onProgress ProgressFunc) ([]model.Operation, model.OperationsPeriod, error) {
 	accounts, err := c.Accounts(ctx)
 	if err != nil {
 		return nil, model.OperationsPeriod{}, fmt.Errorf("получение списка счетов: %w", err)
@@ -69,7 +69,10 @@ func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, t
 	ops := []model.Operation{}
 	instrCache := map[string]*instrumentShort{}
 	effectiveFrom := to
-	for _, a := range accounts {
+	for i, a := range accounts {
+		if onProgress != nil {
+			onProgress(i+1, len(accounts))
+		}
 		from := to
 		if globalFrom != nil {
 			from = *globalFrom

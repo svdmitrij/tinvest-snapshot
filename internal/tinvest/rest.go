@@ -28,11 +28,11 @@ type Client struct {
 	delay   time.Duration
 	log     Logf
 	// Sandbox routes account/portfolio calls through SandboxService.
-	Sandbox          bool
-	instrCacheMu     sync.RWMutex
-	instrShortCache  map[string]*instrumentShort
-	bondCacheMu      sync.RWMutex
-	bondShortCache   map[string]*bond
+	Sandbox         bool
+	instrCacheMu    sync.RWMutex
+	instrShortCache map[string]*instrumentShort
+	bondCacheMu     sync.RWMutex
+	bondShortCache  map[string]*bond
 }
 
 // New builds a client. delay is the base linear backoff between attempts.

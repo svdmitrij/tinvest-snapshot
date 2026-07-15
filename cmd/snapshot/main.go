@@ -71,7 +71,7 @@ func run() int {
 		return 1
 	}
 
-	ops, opsPeriod, err := client.CollectOperations(ctx, window.GlobalFrom, window.To)
+	ops, opsPeriod, err := client.CollectOperations(ctx, window.GlobalFrom, window.To, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Не удалось получить операции: %v\n", err)
 		return 1

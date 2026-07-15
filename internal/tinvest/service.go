@@ -163,7 +163,8 @@ func (c *Client) InstrumentByUID(ctx context.Context, uid string) (*instrumentSh
 	return &resp.Instrument, nil
 }
 
-// InstrumentByUIDCached is like InstrumentByUID but uses an in-memory cache.
+// InstrumentByUIDCached is like InstrumentByUID but uses an in-memory cache
+// with double-checked locking to avoid cache stampede.
 func (c *Client) InstrumentByUIDCached(ctx context.Context, uid string) (*instrumentShort, error) {
 	c.instrCacheMu.RLock()
 	if v, ok := c.instrShortCache[uid]; ok {
@@ -171,6 +172,13 @@ func (c *Client) InstrumentByUIDCached(ctx context.Context, uid string) (*instru
 		return v, nil
 	}
 	c.instrCacheMu.RUnlock()
+	c.instrCacheMu.Lock()
+	// Double-check: another goroutine may have filled the cache while we waited.
+	if v, ok := c.instrShortCache[uid]; ok {
+		c.instrCacheMu.Unlock()
+		return v, nil
+	}
+	c.instrCacheMu.Unlock()
 	v, err := c.InstrumentByUID(ctx, uid)
 	if err != nil {
 		return nil, err
@@ -191,7 +199,8 @@ func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
 	return &resp.Instrument, nil
 }
 
-// BondByUIDCached is like BondByUID but uses an in-memory cache.
+// BondByUIDCached is like BondByUID but uses an in-memory cache
+// with double-checked locking to avoid cache stampede.
 func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error) {
 	c.bondCacheMu.RLock()
 	if v, ok := c.bondShortCache[uid]; ok {
@@ -199,6 +208,13 @@ func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error)
 		return v, nil
 	}
 	c.bondCacheMu.RUnlock()
+	c.bondCacheMu.Lock()
+	// Double-check: another goroutine may have filled the cache while we waited.
+	if v, ok := c.bondShortCache[uid]; ok {
+		c.bondCacheMu.Unlock()
+		return v, nil
+	}
+	c.bondCacheMu.Unlock()
 	v, err := c.BondByUID(ctx, uid)
 	if err != nil {
 		return nil, err
