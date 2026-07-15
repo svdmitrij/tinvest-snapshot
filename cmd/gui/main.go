@@ -90,22 +90,10 @@ func main() {
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
-	// Clamp the initial window to the display size so the bottom edge is never
-	// off-screen; the content itself is scrollable.
-	screen := a.Driver().CanvasForObject(w.Content())
-	if screen != nil {
-		sw, sh := screen.Size().Width, screen.Size().Height
-		const fallbackW, fallbackH float32 = 1280, 800
-		if sw <= 0 {
-			sw = fallbackW
-		}
-		if sh <= 0 {
-			sh = fallbackH
-		}
-		w.Resize(fyne.NewSize(min(sw, fallbackW), min(sh-40, fallbackH)))
-	} else {
-		w.Resize(fyne.NewSize(1280, 800))
-	}
+	// Content is wrapped in a scroll container — every field is reachable
+	// even when the window is smaller than the tables.  The window manager
+	// constrains the initial size to the display; a fixed default is fine.
+	w.Resize(fyne.NewSize(1280, 800))
 	w.ShowAndRun()
 }
 
@@ -340,11 +328,10 @@ func (c *tableCell) set(value string, key string, even bool) {
 	}
 }
 
-// Tapped is a no-op for the cell itself: instrument cards and URLs are opened
-// from the row-level OnSelected handler, so the card always appears first and
-// the T-Invest link is inside the card dialog.
-func (c *tableCell) Tapped(e *fyne.PointEvent) {}
-
+// TappedSecondary provides a right-click context menu to copy the cell value.
+// Tapped is deliberately absent: if tableCell implemented fyne.Tappable, it
+// would intercept left clicks before Table.Tapped → OnSelected could fire,
+// blocking the instrument card popup.
 func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 	if c.value == "" {
 		return
