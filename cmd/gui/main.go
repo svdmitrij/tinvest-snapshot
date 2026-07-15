@@ -156,12 +156,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, msg)
 		w.SetContent(widget.NewLabel(""))
 		w.SetOnClosed(func() { os.Exit(2) })
-		go func() {
-			w.Show()
-			dialog.ShowCustomConfirm("T-Invest", "OK", "", widget.NewLabel(msg), func(ok bool) {
-				os.Exit(2)
-			}, w)
-		}()
+		w.Show()
+		dialog.ShowCustomConfirm("T-Invest", "OK", "", widget.NewLabel(msg), func(ok bool) {
+			os.Exit(2)
+		}, w)
 		a.Run()
 		os.Exit(2)
 	}
@@ -413,6 +411,39 @@ var (
 	zebraOdd  = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 )
 
+// headerCell is a clickable column header whose text size scales with the grid.
+type headerCell struct {
+	widget.BaseWidget
+	text  *canvas.Text
+	onTap func()
+	scale float32
+}
+
+func newHeaderCell(scale float32) *headerCell {
+	h := &headerCell{scale: scale}
+	h.text = canvas.NewText("", theme.ForegroundColor())
+	h.text.TextSize = theme.TextSize() * scale
+	h.text.TextStyle = fyne.TextStyle{Bold: true}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *headerCell) setText(s string) {
+	h.text.Text = s
+	h.text.TextSize = theme.TextSize() * h.scale
+	h.text.Refresh()
+}
+
+func (h *headerCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(h.text)
+}
+
+func (h *headerCell) Tapped(*fyne.PointEvent) {
+	if h.onTap != nil {
+		h.onTap()
+	}
+}
+
 // tableCell draws one table cell: a striped background plus the value, and
 // offers the value for copying through a right-click menu.
 // Left-click explicitly calls onTap to trigger the row card popup — this
@@ -524,13 +555,16 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 		}
 	})
 	g.table.ShowHeaderRow = true
-	g.table.CreateHeader = func() fyne.CanvasObject { return widget.NewButton("", nil) }
+	g.table.CreateHeader = func() fyne.CanvasObject {
+		return newHeaderCell(float32(g.fontScale) / 100.0)
+	}
 	g.table.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		if id.Row != -1 || id.Col < 0 || id.Col >= len(g.columns) {
 			return
 		}
 		col := id.Col
-		b := o.(*widget.Button)
+		h := o.(*headerCell)
+		h.scale = float32(g.fontScale) / 100.0
 		name := g.columns[col]
 		if g.sortColumn == col {
 			if g.desc {
@@ -539,8 +573,8 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 				name += " ▲"
 			}
 		}
-		b.SetText(name)
-		b.OnTapped = func() {
+		h.setText(name)
+		h.onTap = func() {
 			if g.sortColumn == col {
 				g.desc = !g.desc
 			} else {

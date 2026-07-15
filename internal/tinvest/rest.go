@@ -31,8 +31,12 @@ type Client struct {
 	Sandbox         bool
 	instrCacheMu    sync.RWMutex
 	instrShortCache map[string]*instrumentShort
+	inCoalesceMu    sync.Mutex
+	inCoalesce      map[string]chan struct{}
 	bondCacheMu     sync.RWMutex
 	bondShortCache  map[string]*bond
+	bCoalesceMu     sync.Mutex
+	bCoalesce       map[string]chan struct{}
 }
 
 // New builds a client. delay is the base linear backoff between attempts.
@@ -49,7 +53,9 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 		delay:           delay,
 		log:             log,
 		instrShortCache: map[string]*instrumentShort{},
+		inCoalesce:      map[string]chan struct{}{},
 		bondShortCache:  map[string]*bond{},
+		bCoalesce:       map[string]chan struct{}{},
 	}
 }
 
