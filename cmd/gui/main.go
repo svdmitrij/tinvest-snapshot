@@ -295,10 +295,13 @@ var (
 
 // tableCell draws one table cell: a striped background plus the value, and
 // offers the value for copying through a right-click menu.
+// Uses canvas.Text instead of widget.Label: widget.Label implements Tappable
+// (even with no-op, it still consumes tap events), which blocks Table.Tapped
+// → Select → OnSelected from firing.  canvas.Text has no Tappable.
 type tableCell struct {
 	widget.BaseWidget
 	background *canvas.Rectangle
-	label      *widget.Label
+	text       *canvas.Text
 	value      string
 	key        string // localized column header (e.g. "Тикер", "Ticker")
 	tr         func(string) string
@@ -307,20 +310,21 @@ type tableCell struct {
 func newTableCell(tr func(string) string) *tableCell {
 	c := &tableCell{tr: tr}
 	c.background = canvas.NewRectangle(zebraOdd)
-	c.label = widget.NewLabel("")
-	c.label.Truncation = fyne.TextTruncateEllipsis
+	c.text = canvas.NewText("", theme.ForegroundColor())
+	c.text.TextSize = theme.TextSize()
 	c.ExtendBaseWidget(c)
 	return c
 }
 
 func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(container.NewStack(c.background, c.label))
+	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text))
 }
 
 func (c *tableCell) set(value string, key string, even bool) {
 	c.value = value
 	c.key = key
-	c.label.SetText(value)
+	c.text.Text = value
+	c.text.Refresh()
 	fill := zebraOdd
 	if even {
 		fill = zebraEven
@@ -967,10 +971,11 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	frequency := widget.NewSelect([]string{"", d.tr("monthly"), d.tr("quarterly"), d.tr("semiannual"), d.tr("annual")}, nil)
 	couponType := widget.NewSelect([]string{"", d.tr("fixed"), d.tr("floating")}, nil)
 	dividends := widget.NewSelect([]string{"", d.tr("yes"), d.tr("no")}, nil)
-	rateFrom, rateTo, month := widget.NewEntry(), widget.NewEntry(), widget.NewEntry()
+	rateFrom, rateTo := widget.NewEntry(), widget.NewEntry()
 	rateFrom.SetPlaceHolder(d.tr("rate_from"))
 	rateTo.SetPlaceHolder(d.tr("rate_to"))
-	month.SetPlaceHolder(d.tr("coupon_month"))
+	monthNames := append([]string{""}, localizedMonthNames(d)...)
+	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
 	load := func(force bool) {
 		d.busy(d.tr("loading"), func() error {
@@ -992,7 +997,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			}
 			base := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d)}
 			candidates := catalog.Search(d.cache.Instruments, base)
-			needsDetails := rateFrom.Text != "" || rateTo.Text != "" || month.Text != "" || dividends.Selected != ""
+			needsDetails := rateFrom.Text != "" || rateTo.Text != "" || month.Selected != "" || dividends.Selected != ""
 			if needsDetails {
 				enriched := client.EnrichCatalog(context.Background(), candidates, time.Now())
 				byUID := make(map[string]catalog.Instrument, len(enriched))
@@ -1013,7 +1018,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				v := dividends.Selected == d.tr("yes")
 				dividendFilter = &v
 			}
-			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: atoi(month.Text), Dividends: dividendFilter}
+			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
 			items := catalog.Search(d.cache.Instruments, f)
 			cols, rows := instrumentRows(items, d)
 			options := append([]string{d.tr("all")}, currencyOptions(d.cache, "")...)
@@ -1026,10 +1031,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			return nil
 		})
 	}
-	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo, month} {
+	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo} {
 		e.OnSubmitted = func(string) { load(false) }
 	}
-	for _, s := range []*widget.Select{typeSelect, currency, risk, frequency, couponType, dividends} {
+	for _, s := range []*widget.Select{typeSelect, currency, risk, frequency, couponType, dividends, month} {
 		s.OnChanged = func(string) { load(false) }
 	}
 	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)),
@@ -1053,6 +1058,27 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
+
+var monthKeys = []string{"month_jan", "month_feb", "month_mar", "month_apr", "month_may", "month_jun", "month_jul", "month_aug", "month_sep", "month_oct", "month_nov", "month_dec"}
+
+func localizedMonthNames(d *desktop) []string {
+	out := make([]string, len(monthKeys))
+	for i, k := range monthKeys {
+		out[i] = d.tr(k)
+	}
+	return out
+}
+
+// monthIndex returns the 1-based month number from a localized month label,
+// or 0 when the label is empty (no filter).
+func monthIndex(label string, d *desktop) int {
+	for i, k := range monthKeys {
+		if label == d.tr(k) {
+			return i + 1
+		}
+	}
+	return 0
+}
 func riskAPI(s string, d *desktop) string {
 	switch s {
 	case d.tr("risk_low"):
@@ -1192,7 +1218,24 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("auto_refresh"), auto), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang))
+	tzOptions := make([]string, 0, 47)
+	tzLabels := make(map[string]int, 47)
+	for off := -23; off <= 23; off++ {
+		label := "UTC"
+		if off >= 0 {
+			label += "+" + strconv.Itoa(off)
+		} else {
+			label += strconv.Itoa(off)
+		}
+		tzOptions = append(tzOptions, label)
+		tzLabels[label] = off
+	}
+	tz := widget.NewSelect(tzOptions, nil)
+	tz.SetSelected("UTC+" + strconv.Itoa(d.cfg.TimezoneOffset))
+	if d.cfg.TimezoneOffset < 0 {
+		tz.SetSelected("UTC" + strconv.Itoa(d.cfg.TimezoneOffset))
+	}
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("auto_refresh"), auto), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -1205,6 +1248,9 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.AutoRefreshMinutes = atoi(auto.Text)
 		c.CatalogTTLHours = atoi(ttl.Text)
 		c.Language = lang.Selected
+		if off, ok := tzLabels[tz.Selected]; ok {
+			c.TimezoneOffset = off
+		}
 		if e := c.Save(d.configPath); e != nil {
 			dialog.ShowError(e, d.window)
 			return

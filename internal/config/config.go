@@ -42,6 +42,7 @@ type Config struct {
 	AutoRefreshMinutes int    `json:"auto_refresh_minutes,omitempty"`
 	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
 	Language           string `json:"language,omitempty"`
+	TimezoneOffset     int    `json:"timezone_offset,omitempty"`
 }
 
 // Load reads and validates the configuration from path, applying defaults.
@@ -80,6 +81,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Language == "" {
 		c.Language = "ru"
+	}
+	if c.TimezoneOffset < -23 || c.TimezoneOffset > 23 {
+		c.TimezoneOffset = 4
 	}
 	if c.TokenEnv == "" && c.Token == "" {
 		c.TokenEnv = "TINVEST_TOKEN"
