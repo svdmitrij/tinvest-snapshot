@@ -210,8 +210,7 @@ func (d *desktop) build() {
 	d.status = widget.NewLabel("")
 	portfolioBar := container.NewHBox(
 		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
-		button(d.tr("export_all"), widget.MediumImportance, func() { d.exportAll() }),
-		button(d.tr("export"), widget.MediumImportance, func() { d.portfolio.exportView(d.cfg.ReportsDir) }))
+		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }))
 	operationsBar := container.NewHBox(
 		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
 		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
@@ -295,9 +294,9 @@ var (
 
 // tableCell draws one table cell: a striped background plus the value, and
 // offers the value for copying through a right-click menu.
-// Uses canvas.Text instead of widget.Label: widget.Label implements Tappable
-// (even with no-op, it still consumes tap events), which blocks Table.Tapped
-// → Select → OnSelected from firing.  canvas.Text has no Tappable.
+// Left-click explicitly calls onTap to trigger the row card popup — this
+// bypasses Fyne's event-bubbling chain (Table.Tapped → Select → OnSelected)
+// which has proven unreliable across different display drivers.
 type tableCell struct {
 	widget.BaseWidget
 	background *canvas.Rectangle
@@ -305,6 +304,7 @@ type tableCell struct {
 	value      string
 	key        string // localized column header (e.g. "Тикер", "Ticker")
 	tr         func(string) string
+	onTap      func()
 }
 
 func newTableCell(tr func(string) string) *tableCell {
@@ -335,10 +335,15 @@ func (c *tableCell) set(value string, key string, even bool) {
 	}
 }
 
+// Tapped triggers the row-level card popup directly, without relying on
+// Fyne's event-bubbling chain to reach Table.Tapped → OnSelected.
+func (c *tableCell) Tapped(e *fyne.PointEvent) {
+	if c.onTap != nil {
+		c.onTap()
+	}
+}
+
 // TappedSecondary provides a right-click context menu to copy the cell value.
-// Tapped is deliberately absent: if tableCell implemented fyne.Tappable, it
-// would intercept left clicks before Table.Tapped → OnSelected could fire,
-// blocking the instrument card popup.
 func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 	if c.value == "" {
 		return
@@ -374,7 +379,14 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 		if id.Col >= 0 && id.Col < len(g.columns) {
 			key = g.columns[id.Col]
 		}
-		o.(*tableCell).set(value, key, id.Row%2 == 0)
+		cell := o.(*tableCell)
+		cell.set(value, key, id.Row%2 == 0)
+		// Wire the cell tap directly to the row card popup, bypassing the
+		// unreliable Fyne event-bubbling chain.
+		if g.onRow != nil && id.Row < len(g.visible) {
+			row := g.visible[id.Row]
+			cell.onTap = func() { g.onRow(row) }
+		}
 	})
 	g.table.ShowHeaderRow = true
 	g.table.CreateHeader = func() fyne.CanvasObject { return widget.NewButton("", nil) }
