@@ -30,6 +30,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 	"github.com/dmitry/tinvest-snapshot/internal/config"
+	"github.com/dmitry/tinvest-snapshot/internal/display"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 	"github.com/dmitry/tinvest-snapshot/internal/period"
 	"github.com/dmitry/tinvest-snapshot/internal/report"
@@ -90,11 +91,12 @@ func main() {
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
-	// 1024×680 fits on any display from 1366×768 up, leaving room for window
-	// decorations and the system panel.  Fyne v2.6 has no public API for
-	// physical screen size; the scroll container ensures every field stays
-	// reachable regardless of window dimensions.
-	w.Resize(fyne.NewSize(1024, 680))
+	// Clamp the desired 1280×800 to the physical display dimensions read
+	// from /sys/class/drm on Linux.  When the detection fails (headless
+	// server, non-Linux OS, or DRM unavailable), the function returns the
+	// desired size unchanged.  The scroll container makes every field
+	// reachable at any window size.
+	w.Resize(display.Clamp(fyne.NewSize(1280, 800)))
 	w.ShowAndRun()
 }
 
