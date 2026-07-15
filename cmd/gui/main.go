@@ -90,10 +90,11 @@ func main() {
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
-	// Content is wrapped in a scroll container — every field is reachable
-	// even when the window is smaller than the tables.  The window manager
-	// constrains the initial size to the display; a fixed default is fine.
-	w.Resize(fyne.NewSize(1280, 800))
+	// 1024×680 fits on any display from 1366×768 up, leaving room for window
+	// decorations and the system panel.  Fyne v2.6 has no public API for
+	// physical screen size; the scroll container ensures every field stays
+	// reachable regardless of window dimensions.
+	w.Resize(fyne.NewSize(1024, 680))
 	w.ShowAndRun()
 }
 
