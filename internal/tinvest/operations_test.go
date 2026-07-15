@@ -13,13 +13,17 @@ import (
 // instrument enrichment so CollectOperations can be exercised offline.
 func operationsMock(t *testing.T) *httptest.Server {
 	t.Helper()
+	// "name" carries the *instrument* name and "description" a sentence about
+	// the operation, exactly as the production API returns them.
 	page1 := `{"hasNext":true,"nextCursor":"c2","items":[
-		{"id":"op1","date":"2026-03-15T12:00:00Z","type":"OPERATION_TYPE_BUY","name":"Покупка ЦБ",
+		{"id":"op1","date":"2026-03-15T12:00:00Z","type":"OPERATION_TYPE_BUY","name":"ОФЗ 26240",
+		 "description":"Покупка 10 облигаций ОФЗ 26240",
 		 "state":"OPERATION_STATE_EXECUTED","instrumentUid":"bond-uid","figi":"BBG00","instrumentType":"bond",
 		 "payment":{"currency":"rub","units":"-9000","nano":0},"quantity":"10"}
 	]}`
 	page2 := `{"hasNext":false,"nextCursor":"","items":[
-		{"id":"op2","date":"2026-03-20T09:00:00Z","type":"OPERATION_TYPE_INPUT","name":"Пополнение",
+		{"id":"op2","date":"2026-03-20T09:00:00Z","type":"OPERATION_TYPE_INPUT","name":"",
+		 "description":"Пополнение брокерского счёта",
 		 "state":"OPERATION_STATE_EXECUTED","instrumentUid":"","payment":{"currency":"rub","units":"5000","nano":0},"quantity":"0"}
 	]}`
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +68,10 @@ func TestCollectOperationsPaginatesAndMaps(t *testing.T) {
 	op1 := ops[0]
 	if op1.ID != "op1" || op1.Type != "Покупка ЦБ" || op1.State != "исполнена" {
 		t.Errorf("op1 mapping = %+v", op1)
+	}
+	// Regression: the type column must not repeat the instrument name.
+	if op1.Type == op1.Name {
+		t.Errorf("op1 type shows the instrument name %q instead of the operation type", op1.Type)
 	}
 	if op1.Ticker != "SU26240" || op1.ISIN != "RU000A101" || op1.Name != "ОФЗ 26240" {
 		t.Errorf("op1 instrument enrichment = %+v", op1)

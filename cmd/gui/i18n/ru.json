@@ -1,0 +1,28 @@
+{
+  "title":"T-Invest Портфель","portfolio":"Портфель","operations":"Операции","instruments":"Инструменты","settings":"Настройки",
+  "refresh":"Обновить","export":"Экспорт","export_all":"Экспорт отчётов (JSON/CSV/XLSX)","export_title":"Экспорт","refresh_first":"Сначала обновите данные",
+  "search":"Поиск","search_label":"Поиск по таблице:","filter_label":"Фильтр колонки:","group_label":"Группировать по:","value":"Значение фильтра","loading":"Загрузка…",
+  "error":"Ошибка","retry":"Повторить","save":"Сохранить","saved":"Сохранено","group":"Группировка","all":"Все","details":"Карточка инструмента","find_next":"Найти далее",
+  "from":"Период с:","to":"Период по:","table":"Таблица","currency":"Валюта","exchange":"Биржа","sector":"Сектор","rate_from":"Ставка купона от, %","rate_to":"Ставка купона до, %","coupon_month":"Месяц ближайшего купона",
+  "cap_type":"Тип инструмента","cap_risk":"Уровень риска","cap_frequency":"Частота купона","cap_coupon_type":"Тип купона","cap_dividends":"Дивиденды за 12 мес.","no_conversion":"Без пересчёта",
+  "risk_low":"Низкий","risk_moderate":"Средний","risk_high":"Высокий","na":"н/д","monthly":"Раз в месяц","quarterly":"Раз в квартал","semiannual":"Раз в полгода","annual":"Раз в год",
+  "fixed":"Фиксированный","floating":"Флоатер","yes":"Да","no":"Нет","type_share":"Акции","type_bond":"Облигации","type_etf":"Фонды (ETF)","type_currency":"Валюты","type_future":"Фьючерсы","catalog_updated":"Справочник обновлён","free_cash":"Свободные деньги","account_total":"Итог счёта","all_accounts":"Все счета","grand_total":"Общий итог","grand_converted":"Общий итог (пересчёт)",
+  "mode":"Режим API","token_env":"Переменная токена","token_value":"Токен в конфиге","reports":"Каталог отчётов","target_currency":"Целевая валюта","retries":"Повторы","retry_delay":"Задержка повтора, мс","auto_refresh":"Автообновление, мин (0 = выкл.)","catalog_ttl":"Срок кэша, ч","language":"Язык","timezone":"Часовой пояс",
+
+  "copy_cell":"Копировать значение","open_on_site":"Открыть на сайте Т-Инвестиции","close":"Закрыть",
+
+  "col_row_kind":"Тип строки","col_account":"Счёт","col_account_id":"ID счёта","col_account_name":"Счёт","col_type":"Тип","col_instrument_type":"Тип инструмента","col_operation_type":"Тип операции",
+  "col_amortization":"Амортизация","col_amortization_dates":"Даты амортизации","col_offer_dates":"Оферты (досрочное погашение)",
+  "col_ticker":"Тикер","col_isin":"ISIN","col_name":"Название","col_currency":"Валюта","col_quantity":"Количество",
+  "col_avg_price":"Средняя цена","col_current_price":"Текущая цена","col_current_value":"Текущая стоимость","col_pnl_abs":"Прибыль/убыток","col_pnl_pct":"Прибыль/убыток, %",
+  "col_coupon_rate_pct":"Ставка купона, % год.","col_current_yield":"Текущая доходность, %","col_yield_to_maturity":"Доходность к погашению, %",
+  "col_coupon_frequency":"Частота купона","col_next_coupon_date":"Дата ближайшего купона","col_next_coupon_amount":"Сумма ближайшего купона","col_issuer_rating":"Уровень риска эмитента",
+  "col_last_dividend_amount":"Последний дивиденд","col_dividend_frequency":"Частота дивидендов","col_next_payment_date":"Дата следующей выплаты","col_next_payment_amount":"Сумма следующей выплаты",
+  "col_total_amount":"Итого","col_converted_amount":"Итого (пересчёт)","col_converted_currency":"Валюта пересчёта","col_conversion_rate":"Курс пересчёта",
+  "col_id":"ID операции","col_datetime":"Дата и время","col_payment_amount":"Сумма","col_payment_currency":"Валюта суммы","col_state":"Статус",
+  "col_exchange":"Биржа","col_sector":"Сектор","col_risk_level":"Уровень риска","col_coupon_type":"Тип купона","col_dividends":"Дивиденды",
+  "col_nominal":"Номинал","col_maturity_date":"Дата погашения","col_uid":"UID","col_figi":"FIGI",
+
+  "month_jan":"Январь","month_feb":"Февраль","month_mar":"Март","month_apr":"Апрель","month_may":"Май","month_jun":"Июнь",
+  "month_jul":"Июль","month_aug":"Август","month_sep":"Сентябрь","month_oct":"Октябрь","month_nov":"Ноябрь","month_dec":"Декабрь"
+}

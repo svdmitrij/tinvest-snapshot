@@ -107,31 +107,92 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 		PaymentCurrency: it.Payment.Currency,
 		State:           operationStateName(it.State),
 	}
-	if it.InstrumentUID == "" {
-		return op
-	}
-	instr, ok := cache[it.InstrumentUID]
-	if !ok {
-		if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
-			instr = got
-		} else {
-			c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+	if it.InstrumentUID != "" {
+		instr, ok := cache[it.InstrumentUID]
+		if !ok {
+			if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
+				instr = got
+			} else {
+				c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+			}
+			cache[it.InstrumentUID] = instr
 		}
-		cache[it.InstrumentUID] = instr
+		if instr != nil {
+			op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
+		}
 	}
-	if instr != nil {
-		op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
+	// When InstrumentByUID fails or InstrumentUID is absent, the API operation
+	// item's own Name field holds the instrument name (per T-Invest API docs).
+	// FIGI is a different identifier, not a ticker — it must not be substituted
+	// into the ticker column; users looking up a ticker would be misled.
+	if op.Name == "" && it.Name != "" {
+		op.Name = it.Name
 	}
 	return op
 }
 
-// operationTypeName prefers the API's human-readable label, falling back to
-// the raw enum when it is absent.
+// operationTypeName renders the operation type. The API's "name" field holds
+// the *instrument* name, so it must not be used here; we map the type enum and
+// fall back to the API description, then to the raw enum.
 func operationTypeName(it operationItem) string {
-	if it.Name != "" {
-		return it.Name
+	if label, ok := operationTypeLabels[it.Type]; ok {
+		return label
+	}
+	if it.Description != "" {
+		return it.Description
 	}
 	return it.Type
+}
+
+var operationTypeLabels = map[string]string{
+	"OPERATION_TYPE_BUY":                     "Покупка ЦБ",
+	"OPERATION_TYPE_BUY_CARD":                "Покупка ЦБ с карты",
+	"OPERATION_TYPE_SELL":                    "Продажа ЦБ",
+	"OPERATION_TYPE_INPUT":                   "Пополнение",
+	"OPERATION_TYPE_OUTPUT":                  "Вывод средств",
+	"OPERATION_TYPE_COUPON":                  "Выплата купона",
+	"OPERATION_TYPE_DIVIDEND":                "Выплата дивидендов",
+	"OPERATION_TYPE_DIVIDEND_TAX":            "Налог на дивиденды",
+	"OPERATION_TYPE_TAX":                     "Налог",
+	"OPERATION_TYPE_TAX_COUPON":              "Налог на купон",
+	"OPERATION_TYPE_TAX_CORRECTION":          "Корректировка налога",
+	"OPERATION_TYPE_BROKER_FEE":              "Комиссия брокера",
+	"OPERATION_TYPE_SERVICE_FEE":             "Комиссия за обслуживание",
+	"OPERATION_TYPE_MARGIN_FEE":              "Комиссия за маржинальную торговлю",
+	"OPERATION_TYPE_SUCCESS_FEE":             "Комиссия за успех",
+	"OPERATION_TYPE_BOND_REPAYMENT":          "Погашение облигации",
+	"OPERATION_TYPE_BOND_REPAYMENT_FULL":     "Полное погашение облигации",
+	"OPERATION_TYPE_BOND_TAX":                "Налог по облигации",
+	"OPERATION_TYPE_ACCRUING_VARMARGIN":      "Начисление вариационной маржи",
+	"OPERATION_TYPE_WRITING_OFF_VARMARGIN":   "Списание вариационной маржи",
+	"OPERATION_TYPE_INPUT_SECURITIES":        "Зачисление ценных бумаг",
+	"OPERATION_TYPE_OUTPUT_SECURITIES":       "Списание ценных бумаг",
+	"OPERATION_TYPE_OVERNIGHT":               "Овернайт",
+	"OPERATION_TYPE_DELIVERY_BUY":            "Покупка по поставке",
+	"OPERATION_TYPE_DELIVERY_SELL":           "Продажа по поставке",
+	"OPERATION_TYPE_TRACK_MFEE":              "Комиссия за управление",
+	"OPERATION_TYPE_TRACK_PFEE":              "Комиссия за результат",
+	"OPERATION_TYPE_CASH_FEE":                "Комиссия за вывод",
+	"OPERATION_TYPE_OUT_FEE":                 "Комиссия за перевод",
+	"OPERATION_TYPE_OUT_STAMP_DUTY":          "Гербовый сбор",
+	"OPERATION_TYPE_TAX_REPO":                "Налог по РЕПО",
+	"OPERATION_TYPE_TAX_PROGRESSIVE":         "Налог по прогрессивной ставке",
+	"OPERATION_TYPE_DIVIDEND_TRANSFER":       "Перевод дивидендов",
+	"OPERATION_TYPE_TAX_CORRECTION_COUPON":   "Корректировка налога по купону",
+	"OPERATION_TYPE_BENEFIT_TAX":             "Налог с материальной выгоды",
+	"OPERATION_TYPE_FEE_RETURN":              "Возврат комиссии",
+	"OPERATION_TYPE_ASSET_RETURN":            "Возврат активов",
+	"OPERATION_TYPE_ADVICE_FEE":              "Комиссия за консультацию",
+	"OPERATION_TYPE_TRANS_IIS_BS":            "Перевод ценных бумаг с ИИС",
+	"OPERATION_TYPE_TRANS_BS_BS":             "Перевод ценных бумаг между счетами",
+	"OPERATION_TYPE_OUT_MULTI":               "Вывод по нескольким инструментам",
+	"OPERATION_TYPE_INP_MULTI":               "Зачисление по нескольким инструментам",
+	"OPERATION_TYPE_OVER_PLACEMENT":          "Размещение овернайт",
+	"OPERATION_TYPE_OVER_COM":                "Комиссия за овернайт",
+	"OPERATION_TYPE_OVER_INCOME":             "Доход по овернайт",
+	"OPERATION_TYPE_OPTION_EXPIRATION":       "Экспирация опциона",
+	"OPERATION_TYPE_FUTURE_EXPIRATION":       "Экспирация фьючерса",
+	"OPERATION_TYPE_ACCRUING_VARMARGIN_HOLD": "Удержание вариационной маржи",
 }
 
 func operationStateName(state string) string {

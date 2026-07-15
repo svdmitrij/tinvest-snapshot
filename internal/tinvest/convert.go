@@ -84,22 +84,37 @@ func (c *Client) applyConversion(ctx context.Context, snap *model.Snapshot, targ
 			acc.TotalConverted = conv
 		}
 	}
-	var sum float64
+	snap.GrandConverted = grandConverted(cv, snap.GrandTotals, target)
+}
+
+// grandConverted sums every grand total into the target currency. The result
+// carries a Rate only when exactly one source currency was converted: a total
+// mixing several currencies has no single exchange rate to report.
+func grandConverted(cv *converter, totals []model.Total, target string) *model.Converted {
+	var sum, lastRate float64
 	all := true
-	for _, t := range snap.GrandTotals {
+	converted := 0
+	for _, t := range totals {
 		rate, ok := cv.Rate(t.Currency, target)
 		if !ok {
 			all = false
 			continue
 		}
 		sum += floatOf(t.Amount) * rate
+		lastRate = rate
+		converted++
 	}
-	if all || sum != 0 {
-		snap.GrandConverted = &model.Converted{
-			Currency: strings.ToLower(target),
-			Amount:   money.FromFloat(money.Round2(sum)).String(),
-		}
+	if !all && sum == 0 {
+		return nil
 	}
+	grand := &model.Converted{
+		Currency: strings.ToLower(target),
+		Amount:   money.FromFloat(money.Round2(sum)).String(),
+	}
+	if converted == 1 {
+		grand.Rate = strconv.FormatFloat(lastRate, 'f', -1, 64)
+	}
+	return grand
 }
 
 func convert(cv *converter, t model.Total, target string) (*model.Converted, bool) {

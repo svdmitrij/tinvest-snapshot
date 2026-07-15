@@ -1,0 +1,28 @@
+{
+  "title":"T-Invest Portfolio","portfolio":"Portfolio","operations":"Operations","instruments":"Instruments","settings":"Settings",
+  "refresh":"Refresh","export":"Export","export_all":"Export reports (JSON/CSV/XLSX)","export_title":"Export","refresh_first":"Refresh data first",
+  "search":"Search","search_label":"Search in table:","filter_label":"Column filter:","group_label":"Group by:","value":"Filter value","loading":"Loading…",
+  "error":"Error","retry":"Retry","save":"Save","saved":"Saved","group":"Grouping","all":"All","details":"Instrument details","find_next":"Find next",
+  "from":"Period from:","to":"Period to:","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Coupon rate from, %","rate_to":"Coupon rate to, %","coupon_month":"Next coupon month",
+  "cap_type":"Instrument type","cap_risk":"Risk level","cap_frequency":"Coupon frequency","cap_coupon_type":"Coupon type","cap_dividends":"Dividends in 12 months","no_conversion":"No conversion",
+  "risk_low":"Low","risk_moderate":"Moderate","risk_high":"High","na":"n/a","monthly":"Monthly","quarterly":"Quarterly","semiannual":"Semiannual","annual":"Annual",
+  "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","type_share":"Shares","type_bond":"Bonds","type_etf":"ETFs","type_currency":"Currencies","type_future":"Futures","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
+  "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","language":"Language","timezone":"Timezone",
+
+  "copy_cell":"Copy value","open_on_site":"Open on T-Invest website","close":"Close",
+
+  "col_row_kind":"Row kind","col_account":"Account","col_account_id":"Account ID","col_account_name":"Account","col_type":"Type","col_instrument_type":"Instrument type","col_operation_type":"Operation type",
+  "col_amortization":"Amortization","col_amortization_dates":"Amortization dates","col_offer_dates":"Calls (early redemption)",
+  "col_ticker":"Ticker","col_isin":"ISIN","col_name":"Name","col_currency":"Currency","col_quantity":"Quantity",
+  "col_avg_price":"Average price","col_current_price":"Current price","col_current_value":"Current value","col_pnl_abs":"P/L","col_pnl_pct":"P/L, %",
+  "col_coupon_rate_pct":"Coupon rate, % p.a.","col_current_yield":"Current yield, %","col_yield_to_maturity":"Yield to maturity, %",
+  "col_coupon_frequency":"Coupon frequency","col_next_coupon_date":"Next coupon date","col_next_coupon_amount":"Next coupon amount","col_issuer_rating":"Issuer risk level",
+  "col_last_dividend_amount":"Last dividend","col_dividend_frequency":"Dividend frequency","col_next_payment_date":"Next payment date","col_next_payment_amount":"Next payment amount",
+  "col_total_amount":"Total","col_converted_amount":"Total (converted)","col_converted_currency":"Conversion currency","col_conversion_rate":"Conversion rate",
+  "col_id":"Operation ID","col_datetime":"Date and time","col_payment_amount":"Amount","col_payment_currency":"Amount currency","col_state":"State",
+  "col_exchange":"Exchange","col_sector":"Sector","col_risk_level":"Risk level","col_coupon_type":"Coupon type","col_dividends":"Dividends",
+  "col_nominal":"Nominal","col_maturity_date":"Maturity date","col_uid":"UID","col_figi":"FIGI",
+
+  "month_jan":"January","month_feb":"February","month_mar":"March","month_apr":"April","month_may":"May","month_jun":"June",
+  "month_jul":"July","month_aug":"August","month_sep":"September","month_oct":"October","month_nov":"November","month_dec":"December"
+}
