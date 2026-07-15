@@ -228,7 +228,7 @@ func (d *desktop) build() {
 	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, container.NewScroll(tabs)))
 	if d.snapshot != nil {
 		pc, pr := portfolioRows(d.snapshot, d.tr)
-		oc, or := operationRows(d.snapshot, d.tr)
+		oc, or := operationRows(d.snapshot, d.tr, *d.cfg.TimezoneOffset)
 		d.portfolio.set(pc, pr)
 		d.operations.set(oc, or)
 	}
@@ -671,7 +671,7 @@ func (d *desktop) refreshPortfolio() {
 		d.snapshot = snap
 		d.mu.Unlock()
 		pc, pr := portfolioRows(snap, d.tr)
-		oc, or := operationRows(snap, d.tr)
+		oc, or := operationRows(snap, d.tr, *d.cfg.TimezoneOffset)
 		fyne.Do(func() { d.portfolio.set(pc, pr); d.operations.set(oc, or) })
 		return nil
 	})
@@ -772,13 +772,23 @@ func naOr(value string) string {
 	}
 	return value
 }
-func operationRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
+func operationRows(s *model.Snapshot, tr func(string) string, offset int) ([]string, [][]string) {
 	cols := trCols(tr, operationFields...)
 	rows := make([][]string, 0, len(s.Operations))
 	for _, o := range s.Operations {
-		rows = append(rows, []string{o.ID, o.AccountID, o.AccountName, o.DateTime, o.Type, o.InstrumentType, o.Ticker, o.ISIN, o.Name, o.Quantity, o.PaymentAmount, o.PaymentCurrency, o.State})
+		rows = append(rows, []string{o.ID, o.AccountID, o.AccountName, formatTimeZone(o.DateTime, offset), o.Type, o.InstrumentType, o.Ticker, o.ISIN, o.Name, o.Quantity, o.PaymentAmount, o.PaymentCurrency, o.State})
 	}
 	return cols, rows
+}
+
+// formatTimeZone parses an RFC3339 UTC timestamp and formats it in the given
+// timezone offset (hours from UTC).  Returns the original string on error.
+func formatTimeZone(utc string, offset int) string {
+	t, err := time.Parse(time.RFC3339, utc)
+	if err != nil {
+		return utc
+	}
+	return t.In(time.FixedZone("", offset*3600)).Format("2006-01-02 15:04:05")
 }
 
 // showInstrumentCard opens the details popup. A bond whose events were never
@@ -1026,7 +1036,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				d.instruments.set(cols, rows)
 				currency.Options = options
 				currency.Refresh()
-				updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+				updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 			})
 			return nil
 		})
@@ -1053,7 +1063,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
 		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
 	if d.cache != nil {
-		updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+		updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 	}
 	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
 }
@@ -1231,9 +1241,9 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		tzLabels[label] = off
 	}
 	tz := widget.NewSelect(tzOptions, nil)
-	tz.SetSelected("UTC+" + strconv.Itoa(d.cfg.TimezoneOffset))
-	if d.cfg.TimezoneOffset < 0 {
-		tz.SetSelected("UTC" + strconv.Itoa(d.cfg.TimezoneOffset))
+	tz.SetSelected("UTC+" + strconv.Itoa(*d.cfg.TimezoneOffset))
+	if *d.cfg.TimezoneOffset < 0 {
+		tz.SetSelected("UTC" + strconv.Itoa(*d.cfg.TimezoneOffset))
 	}
 	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("auto_refresh"), auto), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
@@ -1249,7 +1259,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.CatalogTTLHours = atoi(ttl.Text)
 		c.Language = lang.Selected
 		if off, ok := tzLabels[tz.Selected]; ok {
-			c.TimezoneOffset = off
+			c.TimezoneOffset = &off
 		}
 		if e := c.Save(d.configPath); e != nil {
 			dialog.ShowError(e, d.window)
