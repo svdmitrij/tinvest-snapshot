@@ -72,9 +72,6 @@ type grid struct {
 	collapsed              map[string]bool
 	onRow                  func([]string)
 	tr                     func(string) string
-	// onURLOpen is called when the user left-clicks a cell that holds a
-	// ticker, name or ISIN value, with the cell value and the column key.
-	onURLOpen func(value, key string)
 }
 
 func main() {
@@ -93,7 +90,22 @@ func main() {
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
-	w.Resize(fyne.NewSize(1280, 800))
+	// Clamp the initial window to the display size so the bottom edge is never
+	// off-screen; the content itself is scrollable.
+	screen := a.Driver().CanvasForObject(w.Content())
+	if screen != nil {
+		sw, sh := screen.Size().Width, screen.Size().Height
+		const fallbackW, fallbackH float32 = 1280, 800
+		if sw <= 0 {
+			sw = fallbackW
+		}
+		if sh <= 0 {
+			sh = fallbackH
+		}
+		w.Resize(fyne.NewSize(min(sw, fallbackW), min(sh-40, fallbackH)))
+	} else {
+		w.Resize(fyne.NewSize(1280, 800))
+	}
 	w.ShowAndRun()
 }
 
@@ -214,9 +226,15 @@ func (d *desktop) build() {
 		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
 		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
 		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }))
+	// Left-click on a position/operation row opens the instrument card with a
+	// hyperlink to the T-Invest website.
+	d.portfolio.onRow = func(row []string) { d.showRowCard(row, portfolioFields) }
+	d.operations.onRow = func(row []string) { d.showRowCard(row, operationFields) }
 	searchTab := d.instrumentTab()
 	tabs := container.NewAppTabs(container.NewTabItem(d.tr("portfolio"), container.NewBorder(portfolioBar, nil, nil, nil, d.portfolio.root)), container.NewTabItem(d.tr("operations"), container.NewBorder(operationsBar, nil, nil, nil, d.operations.root)), container.NewTabItem(d.tr("instruments"), searchTab), container.NewTabItem(d.tr("settings"), d.settingsTab()))
-	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, tabs))
+	// Wrap the whole tab area in a scrollable container so the user can reach
+	// every field even when the window is smaller than the content.
+	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, container.NewScroll(tabs)))
 	if d.snapshot != nil {
 		pc, pr := portfolioRows(d.snapshot, d.tr)
 		oc, or := operationRows(d.snapshot, d.tr)
@@ -224,6 +242,11 @@ func (d *desktop) build() {
 		d.operations.set(oc, or)
 	}
 	d.startAutoRefresh()
+	// Load portfolio and operations immediately on first launch instead of
+	// waiting for the auto-refresh timer or a manual click.
+	if d.snapshot == nil {
+		d.refreshPortfolio()
+	}
 }
 
 func (d *desktop) startAutoRefresh() {
@@ -286,9 +309,8 @@ type tableCell struct {
 	background *canvas.Rectangle
 	label      *widget.Label
 	value      string
-	key        string // raw column field name (e.g. "ticker", "isin", "name")
+	key        string // localized column header (e.g. "Тикер", "Ticker")
 	tr         func(string) string
-	onURLOpen  func(value, key string)
 }
 
 func newTableCell(tr func(string) string) *tableCell {
@@ -318,21 +340,10 @@ func (c *tableCell) set(value string, key string, even bool) {
 	}
 }
 
-// Tapped opens the instrument page on T-Bank when the cell holds a ticker,
-// ISIN or instrument name, and the caller has provided an onURLOpen handler.
-// g.columns stores localized headers (e.g. "Тикер" for ru, "Ticker" for en),
-// so we match through tr("col_"+rawKey) which produces the same localized form.
-func (c *tableCell) Tapped(e *fyne.PointEvent) {
-	if c.onURLOpen == nil || c.value == "" || c.value == model.NA || c.tr == nil {
-		return
-	}
-	for _, raw := range []string{"ticker", "isin", "name", "figi"} {
-		if c.key == c.tr("col_"+raw) {
-			c.onURLOpen(c.value, raw)
-			return
-		}
-	}
-}
+// Tapped is a no-op for the cell itself: instrument cards and URLs are opened
+// from the row-level OnSelected handler, so the card always appears first and
+// the T-Invest link is inside the card dialog.
+func (c *tableCell) Tapped(e *fyne.PointEvent) {}
 
 func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 	if c.value == "" {
@@ -350,7 +361,6 @@ func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 
 func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr}
-	g.onURLOpen = func(value, key string) { openInstrumentURL(d, value, key) }
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
@@ -359,9 +369,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 	g.filterValue.SetPlaceHolder(tr("value"))
 	g.filterValue.OnChanged = func(string) { g.apply() }
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
-		c := newTableCell(tr)
-		c.onURLOpen = g.onURLOpen
-		return c
+		return newTableCell(tr)
 	}, func(id widget.TableCellID, o fyne.CanvasObject) {
 		g.mu.RLock()
 		defer g.mu.RUnlock()
@@ -805,32 +813,24 @@ func (d *desktop) showInstrumentCard(row []string) {
 }
 
 // instrumentURL builds a link to the instrument page on the T-Bank website.
-// Prefers ticker for search, falls back to FIGI.
-func instrumentURL(row []string) string {
-	ticker := fieldOf(row, "ticker")
+// Accepts ticker and figi as separate parameters since callers use different
+// column layouts.
+func instrumentURLFrom(ticker, figi string) string {
 	if strings.TrimSpace(ticker) != "" && ticker != model.NA {
 		return "https://www.tbank.ru/invest/search/?query=" + ticker
 	}
-	figi := fieldOf(row, "figi")
 	if strings.TrimSpace(figi) != "" && figi != model.NA {
 		return "https://www.tbank.ru/invest/catalog/" + figi + "/"
 	}
 	return ""
 }
 
-// openInstrumentURL opens the T-Bank instrument page in the default browser.
-func openInstrumentURL(d *desktop, value, key string) {
-	url := ""
-	if key == "ticker" || key == "name" {
-		url = "https://www.tbank.ru/invest/search/?query=" + value
-	} else if key == "isin" {
-		url = "https://www.tbank.ru/invest/search/?query=" + value
-	} else if key == "figi" {
-		url = "https://www.tbank.ru/invest/catalog/" + value + "/"
-	}
-	if url == "" {
-		return
-	}
+func instrumentURL(row []string) string {
+	return instrumentURLFrom(fieldOf(row, "ticker"), fieldOf(row, "figi"))
+}
+
+// openBrowser launches the default browser for the given URL.
+func openBrowser(url string) {
 	go func() {
 		var cmd string
 		var args []string
@@ -862,24 +862,55 @@ func (d *desktop) showCardDialog(row []string) {
 	content := container.NewVBox(label)
 	if url != "" {
 		link := widget.NewHyperlink(d.tr("open_on_site"), nil)
-		link.OnTapped = func() {
-			go func() {
-				var cmd string
-				var args []string
-				switch runtime.GOOS {
-				case "linux":
-					cmd = "xdg-open"
-					args = []string{url}
-				case "windows":
-					cmd = "rundll32"
-					args = []string{"url.dll,FileProtocolHandler", url}
-				}
-				_ = exec.Command(cmd, args...).Start()
-			}()
-		}
+		link.OnTapped = func() { openBrowser(url) }
 		content.Add(link)
 	}
 	dialog.ShowCustom(d.tr("details"), d.tr("close"), content, d.window)
+}
+
+// rowField reads a value from a row by its raw field name, using the supplied
+// field list (not instrumentFields) so it works with portfolio and operations
+// rows as well.
+func rowField(row []string, fields []string, name string) string {
+	for i, f := range fields {
+		if f == name && i < len(row) {
+			return row[i]
+		}
+	}
+	return ""
+}
+
+// showRowCard opens the instrument card for a row from the portfolio or
+// operations table. It finds ticker/isin/name among the row's fields and
+// shows the URL link when at least one instrument identifier is present.
+func (d *desktop) showRowCard(row []string, fields []string) {
+	ticker := rowField(row, fields, "ticker")
+	name := rowField(row, fields, "name")
+	url := instrumentURLFrom(ticker, rowField(row, fields, "figi"))
+	var b strings.Builder
+	for i, value := range row {
+		if value == "" || value == model.NA {
+			continue
+		}
+		label := ""
+		if i < len(fields) {
+			label = d.tr("col_" + fields[i])
+			if label == "col_"+fields[i] {
+				label = fields[i]
+			}
+		}
+		fmt.Fprintf(&b, "%s: %s\n", label, value)
+	}
+	if name != "" {
+		dialogTitle := d.tr("details") + ": " + name
+		content := container.NewVBox(widget.NewLabel(b.String()))
+		if url != "" {
+			link := widget.NewHyperlink(d.tr("open_on_site"), nil)
+			link.OnTapped = func() { openBrowser(url) }
+			content.Add(link)
+		}
+		dialog.ShowCustom(dialogTitle, d.tr("close"), content, d.window)
+	}
 }
 
 // fieldOf reads a value out of an instrument row by its raw field name.
