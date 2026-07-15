@@ -40,8 +40,11 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-//go:embed i18n/*.json
+//go:embed i18n/*.json config.example.json
 var translations embed.FS
+
+//go:embed config.example.json
+var embeddedConfigBytes []byte
 
 type desktop struct {
 	mu                                 sync.RWMutex
@@ -75,21 +78,96 @@ type grid struct {
 	collapsed              map[string]bool
 	onRow                  func([]string)
 	tr                     func(string) string
+	fontScale              int // percent (60–200), default 100
+}
+
+// resolveConfigPath finds or creates the config file. The resolution order is:
+// 1. --config flag (explicit path)
+// 2. ./config.json (backward compatibility)
+// 3. <UserConfigDir>/tinvest-snapshot/config.json (OS config directory)
+// 4. Auto-create from embedded template in <UserConfigDir>/tinvest-snapshot/
+// Returns the path and whether it was newly auto-created.
+func resolveConfigPath() (string, *config.Config, error) {
+	explicitPath := flag.String("config", "", "path to configuration")
+	flag.Parse()
+
+	// 1. Explicit --config flag (backward compatible)
+	if *explicitPath != "" {
+		cfg, err := config.Load(*explicitPath)
+		if err != nil {
+			return "", nil, err
+		}
+		return *explicitPath, cfg, nil
+	}
+
+	// 2. ./config.json (backward compatibility)
+	if _, err := os.Stat("config.json"); err == nil {
+		cfg, err := config.Load("config.json")
+		if err != nil {
+			return "", nil, err
+		}
+		return "config.json", cfg, nil
+	}
+
+	// 3. <UserConfigDir>/tinvest-snapshot/config.json
+	userCfgDir, err := os.UserConfigDir()
+	if err == nil {
+		osCfgPath := filepath.Join(userCfgDir, "tinvest-snapshot", "config.json")
+		if _, err := os.Stat(osCfgPath); err == nil {
+			cfg, err := config.Load(osCfgPath)
+			if err != nil {
+				return "", nil, err
+			}
+			return osCfgPath, cfg, nil
+		}
+	}
+
+	// 4. Auto-create from embedded template in <UserConfigDir>/tinvest-snapshot/
+	if userCfgDir == "" {
+		userCfgDir, _ = os.UserConfigDir()
+	}
+	if userCfgDir == "" {
+		return "", nil, fmt.Errorf("не удалось определить каталог конфигурации ОС и config.json не найден")
+	}
+	osCfgDir := filepath.Join(userCfgDir, "tinvest-snapshot")
+	osCfgPath := filepath.Join(osCfgDir, "config.json")
+	if err := os.MkdirAll(osCfgDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("не удалось создать каталог конфигурации %s: %w", osCfgDir, err)
+	}
+	if err := os.WriteFile(osCfgPath, embeddedConfigBytes, 0o644); err != nil {
+		return "", nil, fmt.Errorf("не удалось записать конфиг %s: %w", osCfgPath, err)
+	}
+	cfg, err := config.Load(osCfgPath)
+	if err != nil {
+		return "", nil, err
+	}
+	return osCfgPath, cfg, nil
 }
 
 func main() {
-	configPath := flag.String("config", "config.json", "path to configuration")
-	flag.Parse()
-	cfg, err := config.Load(*configPath)
+	configPath, cfg, err := resolveConfigPath()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Show a GUI error dialog even when config resolution fails
+		// (critical for Windows: double-click launch has no console).
+		a := app.NewWithID("ru.dmitry.tinvest-snapshot")
+		w := a.NewWindow("T-Invest")
+		msg := err.Error()
+		// Keep stderr for console launches, add GUI dialog for desktop.
+		fmt.Fprintln(os.Stderr, msg)
+		w.SetContent(widget.NewLabel(""))
+		w.SetOnClosed(func() { os.Exit(2) })
+		w.Show()
+		dialog.ShowCustomConfirm("T-Invest", "OK", "", widget.NewLabel(msg), func(ok bool) {
+			os.Exit(2)
+		}, w)
+		a.Run()
 		os.Exit(2)
 	}
 	cacheRoot, _ := os.UserCacheDir()
 	a := app.NewWithID("ru.dmitry.tinvest-snapshot")
 	a.Settings().SetTheme(calmTheme{theme.DefaultTheme()})
 	w := a.NewWindow("T-Invest")
-	d := &desktop{window: w, configPath: *configPath, cachePath: filepath.Join(cacheRoot, "tinvest-snapshot", "catalog.json"), cfg: cfg}
+	d := &desktop{window: w, configPath: configPath, cachePath: filepath.Join(cacheRoot, "tinvest-snapshot", "catalog.json"), cfg: cfg}
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
@@ -147,10 +225,11 @@ func trCols(tr func(string) string, keys ...string) []string {
 // headerWidth sizes a column so its localized caption stays readable: measured
 // in runes, not bytes, because Cyrillic headers are twice as long in bytes, and
 // with room for the sort arrow appended to the active column.
-func headerWidth(caption string) float32 {
+// fontScale is a multiplier (e.g. 1.5 for 150%).
+func headerWidth(caption string, fontScale float32) float32 {
 	const perRune, padding, narrowest, widest = 9, 46, 140, 340
-	width := float32(utf8.RuneCountInString(caption)*perRune + padding)
-	return min(max(width, narrowest), widest)
+	width := float32(utf8.RuneCountInString(caption)*perRune+padding) * fontScale
+	return min(max(width, narrowest*fontScale), widest*fontScale)
 }
 
 // baseCurrencies seed the currency pickers before the catalog is loaded, so a
@@ -204,20 +283,23 @@ func (l widthFraction) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 }
 
 func (d *desktop) build() {
-	d.portfolio = newGrid(d.window, d.tr, d)
-	d.operations = newGrid(d.window, d.tr, d)
-	d.instruments = newGrid(d.window, d.tr, d)
+	d.portfolio = newGrid(d.window, d.tr, d, d.cfg.FontScalePortfolio)
+	d.operations = newGrid(d.window, d.tr, d, d.cfg.FontScaleOperations)
+	d.instruments = newGrid(d.window, d.tr, d, d.cfg.FontScaleInstruments)
 	d.from = widget.NewDateEntry()
 	d.to = widget.NewDateEntry()
 	d.status = widget.NewLabel("")
+
 	portfolioBar := container.NewHBox(
 		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
-		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }))
+		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }),
+		d.makeScaleBar(d.portfolio, &d.cfg.FontScalePortfolio))
 	operationsBar := container.NewHBox(
 		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
 		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
 		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
-		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }))
+		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }),
+		d.makeScaleBar(d.operations, &d.cfg.FontScaleOperations))
 	// Left-click on a position/operation row opens the instrument card with a
 	// hyperlink to the T-Invest website.
 	d.portfolio.onRow = func(row []string) { d.showRowCard(row, portfolioFields) }
@@ -239,6 +321,41 @@ func (d *desktop) build() {
 	if d.snapshot == nil {
 		d.refreshPortfolio()
 	}
+}
+
+// applyFontScale updates column widths and refreshes the table for a new font scale.
+func (d *desktop) applyFontScale(g *grid, scale float32) {
+	g.mu.RLock()
+	cols := g.columns
+	g.mu.RUnlock()
+	for i, c := range cols {
+		g.table.SetColumnWidth(i, headerWidth(c, scale))
+	}
+	g.table.Refresh()
+}
+
+// makeScaleBar builds A− / A+ / scale-label controls for one grid.
+func (d *desktop) makeScaleBar(g *grid, scalePtr *int) *fyne.Container {
+	label := widget.NewLabel(fmt.Sprintf("%d%%", *scalePtr))
+	minus := widget.NewButton("A\u2212", func() {
+		if *scalePtr > 60 {
+			*scalePtr -= 10
+			g.fontScale = *scalePtr
+			d.applyFontScale(g, float32(*scalePtr)/100.0)
+			label.SetText(fmt.Sprintf("%d%%", *scalePtr))
+			_ = d.cfg.Save(d.configPath)
+		}
+	})
+	plus := widget.NewButton("A+", func() {
+		if *scalePtr < 200 {
+			*scalePtr += 10
+			g.fontScale = *scalePtr
+			d.applyFontScale(g, float32(*scalePtr)/100.0)
+			label.SetText(fmt.Sprintf("%d%%", *scalePtr))
+			_ = d.cfg.Save(d.configPath)
+		}
+	})
+	return container.NewHBox(minus, plus, label)
 }
 
 func (d *desktop) startAutoRefresh() {
@@ -294,6 +411,39 @@ var (
 	zebraOdd  = color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 )
 
+// headerCell is a clickable column header whose text size scales with the grid.
+type headerCell struct {
+	widget.BaseWidget
+	text  *canvas.Text
+	onTap func()
+	scale float32
+}
+
+func newHeaderCell(scale float32) *headerCell {
+	h := &headerCell{scale: scale}
+	h.text = canvas.NewText("", theme.ForegroundColor())
+	h.text.TextSize = theme.TextSize() * scale
+	h.text.TextStyle = fyne.TextStyle{Bold: true}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *headerCell) setText(s string) {
+	h.text.Text = s
+	h.text.TextSize = theme.TextSize() * h.scale
+	h.text.Refresh()
+}
+
+func (h *headerCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(h.text)
+}
+
+func (h *headerCell) Tapped(*fyne.PointEvent) {
+	if h.onTap != nil {
+		h.onTap()
+	}
+}
+
 // tableCell draws one table cell: a striped background plus the value, and
 // offers the value for copying through a right-click menu.
 // Left-click explicitly calls onTap to trigger the row card popup — this
@@ -322,10 +472,11 @@ func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text))
 }
 
-func (c *tableCell) set(value string, key string, even bool) {
+func (c *tableCell) set(value string, key string, even bool, fontScale float32) {
 	c.value = value
 	c.key = key
 	c.text.Text = value
+	c.text.TextSize = theme.TextSize() * fontScale
 	c.text.Refresh()
 	fill := zebraOdd
 	if even {
@@ -360,8 +511,8 @@ func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 	widget.ShowPopUpMenuAtPosition(fyne.NewMenu("", copyItem), canvas, e.AbsolutePosition)
 }
 
-func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
-	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr}
+func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *grid {
+	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr, fontScale: fontScale}
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
@@ -382,7 +533,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 			key = g.columns[id.Col]
 		}
 		cell := o.(*tableCell)
-		cell.set(value, key, id.Row%2 == 0)
+		cell.set(value, key, id.Row%2 == 0, float32(g.fontScale)/100.0)
 		// Wire the cell tap: for group headers toggle collapse, for data
 		// rows trigger the card popup directly — both bypass Fyne's
 		// unreliable event-bubbling chain.
@@ -404,13 +555,16 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 		}
 	})
 	g.table.ShowHeaderRow = true
-	g.table.CreateHeader = func() fyne.CanvasObject { return widget.NewButton("", nil) }
+	g.table.CreateHeader = func() fyne.CanvasObject {
+		return newHeaderCell(float32(g.fontScale) / 100.0)
+	}
 	g.table.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		if id.Row != -1 || id.Col < 0 || id.Col >= len(g.columns) {
 			return
 		}
 		col := id.Col
-		b := o.(*widget.Button)
+		h := o.(*headerCell)
+		h.scale = float32(g.fontScale) / 100.0
 		name := g.columns[col]
 		if g.sortColumn == col {
 			if g.desc {
@@ -419,8 +573,8 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 				name += " ▲"
 			}
 		}
-		b.SetText(name)
-		b.OnTapped = func() {
+		h.setText(name)
+		h.onTap = func() {
 			if g.sortColumn == col {
 				g.desc = !g.desc
 			} else {
@@ -470,8 +624,9 @@ func (g *grid) set(columns []string, rows [][]string) {
 	g.mu.Unlock()
 	g.group.Options = append([]string{""}, columns...)
 	g.filterColumn.Options = append([]string{""}, columns...)
+	scale := float32(g.fontScale) / 100.0
 	for i, c := range columns {
-		g.table.SetColumnWidth(i, headerWidth(c))
+		g.table.SetColumnWidth(i, headerWidth(c, scale))
 	}
 	g.apply()
 }
@@ -491,62 +646,86 @@ func (g *grid) apply() {
 			rows = append(rows, append([]string(nil), r...))
 		}
 	}
-	col := g.sortColumn
-	if name := g.group.Selected; name != "" {
-		for i, c := range g.columns {
-			if c == name {
-				col = i
-				break
-			}
-		}
-	}
-	if col >= 0 {
-		sort.SliceStable(rows, func(i, j int) bool {
-			a, b := rows[i][col], rows[j][col]
-			fa, ea := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(a, ",", "."), " ", ""), 64)
-			fb, eb := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(b, ",", "."), " ", ""), 64)
-			if ea == nil && eb == nil {
-				if g.desc {
-					return fa > fb
-				}
-				return fa < fb
-			}
-			if g.desc {
-				return a > b
-			}
-			return a < b
-		})
-	}
-	g.dataView = append([][]string(nil), rows...)
-	if groupName := g.group.Selected; groupName != "" {
-		groupCol := -1
+
+	groupName := g.group.Selected
+	groupCol := -1
+	if groupName != "" {
 		for i, c := range g.columns {
 			if c == groupName {
 				groupCol = i
 				break
 			}
 		}
-		if groupCol >= 0 {
-			grouped := make([][]string, 0, len(rows))
-			last := "\x00"
-			for _, r := range rows {
-				key := groupName + ": " + r[groupCol]
-				if key != last {
-					last = key
-					head := make([]string, len(g.columns))
-					if g.collapsed[key] {
-						head[0] = "▸ " + key
-					} else {
-						head[0] = "▾ " + key
-					}
-					grouped = append(grouped, head)
-				}
-				if !g.collapsed[key] {
-					grouped = append(grouped, r)
+	}
+
+	// rowLess returns true if row a should come before row b when sorted by col.
+	rowLess := func(a, b []string, col int, desc bool) bool {
+		va, vb := a[col], b[col]
+		fa, ea := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(va, ",", "."), " ", ""), 64)
+		fb, eb := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(vb, ",", "."), " ", ""), 64)
+		if ea == nil && eb == nil {
+			if desc {
+				return fa > fb
+			}
+			return fa < fb
+		}
+		if desc {
+			return va > vb
+		}
+		return va < vb
+	}
+
+	if groupCol >= 0 {
+		// Phase 1: global sort by group column for stable group order.
+		sort.SliceStable(rows, func(i, j int) bool {
+			return rowLess(rows[i], rows[j], groupCol, false)
+		})
+		// Phase 2: split into groups and sort each group by user's sortColumn.
+		if g.sortColumn >= 0 && g.sortColumn != groupCol {
+			start := 0
+			for i := 1; i <= len(rows); i++ {
+				if i == len(rows) || rows[i][groupCol] != rows[start][groupCol] {
+					chunk := rows[start:i]
+					sort.SliceStable(chunk, func(a, b int) bool {
+						return rowLess(chunk[a], chunk[b], g.sortColumn, g.desc)
+					})
+					start = i
 				}
 			}
-			rows = grouped
+		} else if g.sortColumn == groupCol {
+			// When sorting by the group column itself, sort globally (asc/desc).
+			sort.SliceStable(rows, func(i, j int) bool {
+				return rowLess(rows[i], rows[j], groupCol, g.desc)
+			})
 		}
+	} else if g.sortColumn >= 0 {
+		// No grouping: sort globally by user's column.
+		sort.SliceStable(rows, func(i, j int) bool {
+			return rowLess(rows[i], rows[j], g.sortColumn, g.desc)
+		})
+	}
+
+	g.dataView = append([][]string(nil), rows...)
+	if groupCol >= 0 {
+		grouped := make([][]string, 0, len(rows))
+		last := "\x00"
+		for _, r := range rows {
+			key := groupName + ": " + r[groupCol]
+			if key != last {
+				last = key
+				head := make([]string, len(g.columns))
+				if g.collapsed[key] {
+					head[0] = "▸ " + key
+				} else {
+					head[0] = "▾ " + key
+				}
+				grouped = append(grouped, head)
+			}
+			if !g.collapsed[key] {
+				grouped = append(grouped, r)
+			}
+		}
+		rows = grouped
 	}
 	g.visible = rows
 	g.mu.Unlock()
@@ -684,11 +863,19 @@ func (d *desktop) refreshPortfolio() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		snap, e := c.Collect(ctx, d.cfg.Mode, d.cfg.TargetCurrency, now)
+		snap, e := c.Collect(ctx, d.cfg.Mode, d.cfg.TargetCurrency, now, func(current, total int) {
+			fyne.Do(func() {
+				d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading"), current, total))
+			})
+		})
 		if e != nil {
 			return e
 		}
-		ops, p, e := c.CollectOperations(ctx, win.GlobalFrom, win.To)
+		ops, p, e := c.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
+			fyne.Do(func() {
+				d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total))
+			})
+		})
 		if e != nil {
 			return e
 		}
@@ -1092,7 +1279,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	if d.cache != nil {
 		updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 	}
-	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
+	scaleBar := d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments)
+	return container.NewBorder(container.NewVBox(bar, updated, scaleBar), nil, nil, nil, d.instruments.root)
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
 

@@ -46,6 +46,12 @@ type Config struct {
 	// to +4 in that case).  An explicit UTC+0 is stored as a pointer to 0,
 	// distinct from absent.
 	TimezoneOffset *int `json:"timezone_offset,omitempty"`
+	// FontScalePortfolio sets the font scale for the Portfolio tab in percent (60-200, default 100).
+	FontScalePortfolio int `json:"font_scale_portfolio,omitempty"`
+	// FontScaleOperations sets the font scale for the Operations tab in percent (60-200, default 100).
+	FontScaleOperations int `json:"font_scale_operations,omitempty"`
+	// FontScaleInstruments sets the font scale for the Instruments tab in percent (60-200, default 100).
+	FontScaleInstruments int `json:"font_scale_instruments,omitempty"`
 }
 
 // Load reads and validates the configuration from path, applying defaults.
@@ -93,6 +99,20 @@ func (c *Config) applyDefaults() {
 		def := 4
 		c.TimezoneOffset = &def
 	}
+	clampScale := func(v *int) {
+		if *v == 0 {
+			*v = 100
+		}
+		if *v < 60 {
+			*v = 60
+		}
+		if *v > 200 {
+			*v = 200
+		}
+	}
+	clampScale(&c.FontScalePortfolio)
+	clampScale(&c.FontScaleOperations)
+	clampScale(&c.FontScaleInstruments)
 	if c.TokenEnv == "" && c.Token == "" {
 		c.TokenEnv = "TINVEST_TOKEN"
 	}

@@ -163,6 +163,48 @@ func (c *Client) InstrumentByUID(ctx context.Context, uid string) (*instrumentSh
 	return &resp.Instrument, nil
 }
 
+// InstrumentByUIDCached is like InstrumentByUID but uses an in-memory cache
+// with per-UID coalesce: concurrent requests for the same UID result in
+// a single API call; other goroutines wait and read the cached result.
+func (c *Client) InstrumentByUIDCached(ctx context.Context, uid string) (*instrumentShort, error) {
+	c.instrCacheMu.RLock()
+	if v, ok := c.instrShortCache[uid]; ok {
+		c.instrCacheMu.RUnlock()
+		return v, nil
+	}
+	c.instrCacheMu.RUnlock()
+
+	// Check if another goroutine is already fetching this UID.
+	c.inCoalesceMu.Lock()
+	if ch, ok := c.inCoalesce[uid]; ok {
+		c.inCoalesceMu.Unlock()
+		<-ch
+		c.instrCacheMu.RLock()
+		v := c.instrShortCache[uid]
+		c.instrCacheMu.RUnlock()
+		if v != nil {
+			return v, nil
+		}
+		// First goroutine failed; retry alone.
+		return c.InstrumentByUIDCached(ctx, uid)
+	}
+	ch := make(chan struct{})
+	c.inCoalesce[uid] = ch
+	c.inCoalesceMu.Unlock()
+
+	v, err := c.InstrumentByUID(ctx, uid)
+	if err == nil {
+		c.instrCacheMu.Lock()
+		c.instrShortCache[uid] = v
+		c.instrCacheMu.Unlock()
+	}
+	c.inCoalesceMu.Lock()
+	delete(c.inCoalesce, uid)
+	close(ch)
+	c.inCoalesceMu.Unlock()
+	return v, err
+}
+
 // BondByUID returns bond-specific reference data.
 func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
 	req := instrumentRequest{IDType: "INSTRUMENT_ID_TYPE_UID", ID: uid}
@@ -171,6 +213,47 @@ func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
 		return nil, err
 	}
 	return &resp.Instrument, nil
+}
+
+// BondByUIDCached is like BondByUID but uses an in-memory cache
+// with per-UID coalesce: concurrent requests for the same UID result in
+// a single API call; other goroutines wait and read the cached result.
+func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error) {
+	c.bondCacheMu.RLock()
+	if v, ok := c.bondShortCache[uid]; ok {
+		c.bondCacheMu.RUnlock()
+		return v, nil
+	}
+	c.bondCacheMu.RUnlock()
+
+	// Check if another goroutine is already fetching this UID.
+	c.bCoalesceMu.Lock()
+	if ch, ok := c.bCoalesce[uid]; ok {
+		c.bCoalesceMu.Unlock()
+		<-ch
+		c.bondCacheMu.RLock()
+		v := c.bondShortCache[uid]
+		c.bondCacheMu.RUnlock()
+		if v != nil {
+			return v, nil
+		}
+		return c.BondByUIDCached(ctx, uid)
+	}
+	ch := make(chan struct{})
+	c.bCoalesce[uid] = ch
+	c.bCoalesceMu.Unlock()
+
+	v, err := c.BondByUID(ctx, uid)
+	if err == nil {
+		c.bondCacheMu.Lock()
+		c.bondShortCache[uid] = v
+		c.bondCacheMu.Unlock()
+	}
+	c.bCoalesceMu.Lock()
+	delete(c.bCoalesce, uid)
+	close(ch)
+	c.bCoalesceMu.Unlock()
+	return v, err
 }
 
 // Coupons returns coupon events for a bond within [from, to].

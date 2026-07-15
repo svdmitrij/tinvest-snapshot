@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmitry/tinvest-snapshot/internal/bondyield"
@@ -15,7 +16,10 @@ import (
 // Collect builds a full portfolio snapshot. targetCurrency ("" to disable)
 // adds converted totals. Per-instrument enrichment failures degrade to NA
 // and never abort the run; only account/portfolio failures are fatal.
-func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now time.Time) (*model.Snapshot, error) {
+// ProgressFunc is called with the current account index and total count during collection.
+type ProgressFunc func(current, total int)
+
+func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now time.Time, onProgress ProgressFunc) (*model.Snapshot, error) {
 	accounts, err := c.Accounts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("получение списка счетов: %w", err)
@@ -28,7 +32,10 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 	}
 
 	grand := map[string]float64{}
-	for _, a := range accounts {
+	for i, a := range accounts {
+		if onProgress != nil {
+			onProgress(i+1, len(accounts))
+		}
 		acc, err := c.collectAccount(ctx, a, now)
 		if err != nil {
 			return nil, err
@@ -53,7 +60,7 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 // the effective bounds (earliest start actually used, and to). Instrument
 // enrichment failures degrade to empty fields and never abort the run; only
 // account listing or operations retrieval failures are fatal.
-func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, to time.Time) ([]model.Operation, model.OperationsPeriod, error) {
+func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, to time.Time, onProgress ProgressFunc) ([]model.Operation, model.OperationsPeriod, error) {
 	accounts, err := c.Accounts(ctx)
 	if err != nil {
 		return nil, model.OperationsPeriod{}, fmt.Errorf("получение списка счетов: %w", err)
@@ -62,7 +69,10 @@ func (c *Client) CollectOperations(ctx context.Context, globalFrom *time.Time, t
 	ops := []model.Operation{}
 	instrCache := map[string]*instrumentShort{}
 	effectiveFrom := to
-	for _, a := range accounts {
+	for i, a := range accounts {
+		if onProgress != nil {
+			onProgress(i+1, len(accounts))
+		}
 		from := to
 		if globalFrom != nil {
 			from = *globalFrom
@@ -110,7 +120,7 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 	if it.InstrumentUID != "" {
 		instr, ok := cache[it.InstrumentUID]
 		if !ok {
-			if got, err := c.InstrumentByUID(ctx, it.InstrumentUID); err == nil {
+			if got, err := c.InstrumentByUIDCached(ctx, it.InstrumentUID); err == nil {
 				instr = got
 			} else {
 				c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
@@ -224,6 +234,12 @@ func (c *Client) collectAccount(ctx context.Context, a apiAccount, now time.Time
 
 	cash := map[string]money.Quotation{}
 	var cashOrder []string
+	// Collect non-currency positions for parallel enrichment.
+	type posIdx struct {
+		p   portfolioPosition
+		idx int
+	}
+	var toEnrich []posIdx
 	for _, p := range pf.Positions {
 		if p.InstrumentType == "currency" {
 			code := currencyCode(p)
@@ -233,8 +249,38 @@ func (c *Client) collectAccount(ctx context.Context, a apiAccount, now time.Time
 			cash[code] = cash[code].Add(p.Quantity)
 			continue
 		}
-		acc.Positions = append(acc.Positions, c.buildPosition(ctx, p, now))
+		toEnrich = append(toEnrich, posIdx{p: p, idx: len(toEnrich)})
 	}
+
+	// Enrich positions in parallel with a semaphore (max 6 concurrent).
+	if len(toEnrich) > 0 {
+		positions := make([]model.Position, len(toEnrich))
+		sem := make(chan struct{}, 6)
+		errs := make(chan error, len(toEnrich))
+		var wg sync.WaitGroup
+		for _, pi := range toEnrich {
+			wg.Add(1)
+			go func(pi posIdx) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				positions[pi.idx] = c.buildPosition(ctx, pi.p, now)
+				if ctx.Err() != nil {
+					select {
+					case errs <- ctx.Err():
+					default:
+					}
+				}
+			}(pi)
+		}
+		wg.Wait()
+		close(errs)
+		if err := <-errs; err != nil {
+			return nil, err
+		}
+		acc.Positions = positions
+	}
+
 	for _, code := range cashOrder {
 		acc.Cash = append(acc.Cash, model.CashBalance{Currency: code, Amount: cash[code].String()})
 	}
@@ -266,7 +312,7 @@ func (c *Client) buildPosition(ctx context.Context, p portfolioPosition, now tim
 		pos.PnLPct = model.NA
 	}
 
-	if instr, err := c.InstrumentByUID(ctx, p.InstrumentUID); err == nil {
+	if instr, err := c.InstrumentByUIDCached(ctx, p.InstrumentUID); err == nil {
 		if instr.Ticker != "" {
 			pos.Ticker = instr.Ticker
 		}
@@ -298,7 +344,7 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 	var perYear int32
 	var maturity time.Time
 	var hasMaturity, floating, perpetual, amortized bool
-	if b, err := c.BondByUID(ctx, p.InstrumentUID); err == nil {
+	if b, err := c.BondByUIDCached(ctx, p.InstrumentUID); err == nil {
 		if b.CouponQuantityPerYear > 0 {
 			perYear = b.CouponQuantityPerYear
 			info.CouponFrequency = strconv.Itoa(int(perYear))
@@ -315,7 +361,8 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 		c.log("Не удалось получить данные облигации %s: %v", p.InstrumentUID, err)
 	}
 
-	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(30, 0, 0))
+	// Narrow coupon window: 1 year back, 5 years forward (was 30 years).
+	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
 	if err != nil {
 		c.log("Не удалось получить купоны %s: %v", p.InstrumentUID, err)
 		return info
