@@ -91,12 +91,12 @@ func main() {
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
-	// Clamp the desired 1280×800 to the physical display dimensions read
-	// from /sys/class/drm on Linux.  When the detection fails (headless
-	// server, non-Linux OS, or DRM unavailable), the function returns the
-	// desired size unchanged.  The scroll container makes every field
+	// Clamp the desired 1024×680 to the physical display dimensions read
+	// from /sys/class/drm on Linux.  1024×680 fits on any screen from
+	// 1366×768 up and is the safe fallback for headless servers, Windows,
+	// and non-Linux platforms.  The scroll container makes every field
 	// reachable at any window size.
-	w.Resize(display.Clamp(fyne.NewSize(1280, 800)))
+	w.Resize(display.Clamp(fyne.NewSize(1024, 680)))
 	w.ShowAndRun()
 }
 
