@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,11 @@ type Client struct {
 	delay   time.Duration
 	log     Logf
 	// Sandbox routes account/portfolio calls through SandboxService.
-	Sandbox bool
+	Sandbox          bool
+	instrCacheMu     sync.RWMutex
+	instrShortCache  map[string]*instrumentShort
+	bondCacheMu      sync.RWMutex
+	bondShortCache   map[string]*bond
 }
 
 // New builds a client. delay is the base linear backoff between attempts.
@@ -36,13 +41,15 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 		log = func(string, ...any) {}
 	}
 	return &Client{
-		base:    base,
-		token:   token,
-		appName: appName,
-		http:    &http.Client{Timeout: 30 * time.Second},
-		retries: retries,
-		delay:   delay,
-		log:     log,
+		base:            base,
+		token:           token,
+		appName:         appName,
+		http:            &http.Client{Timeout: 30 * time.Second},
+		retries:         retries,
+		delay:           delay,
+		log:             log,
+		instrShortCache: map[string]*instrumentShort{},
+		bondShortCache:  map[string]*bond{},
 	}
 }
 

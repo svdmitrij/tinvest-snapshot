@@ -65,7 +65,7 @@ func run() int {
 
 	fmt.Printf("Режим: %s. Получение данных из T-Invest API...\n", cfg.Mode)
 	ctx := context.Background()
-	snap, err := client.Collect(ctx, cfg.Mode, target, now)
+	snap, err := client.Collect(ctx, cfg.Mode, target, now, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Не удалось получить снимок портфеля: %v\n", err)
 		return 1

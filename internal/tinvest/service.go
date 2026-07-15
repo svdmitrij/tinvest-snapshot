@@ -163,6 +163,24 @@ func (c *Client) InstrumentByUID(ctx context.Context, uid string) (*instrumentSh
 	return &resp.Instrument, nil
 }
 
+// InstrumentByUIDCached is like InstrumentByUID but uses an in-memory cache.
+func (c *Client) InstrumentByUIDCached(ctx context.Context, uid string) (*instrumentShort, error) {
+	c.instrCacheMu.RLock()
+	if v, ok := c.instrShortCache[uid]; ok {
+		c.instrCacheMu.RUnlock()
+		return v, nil
+	}
+	c.instrCacheMu.RUnlock()
+	v, err := c.InstrumentByUID(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	c.instrCacheMu.Lock()
+	c.instrShortCache[uid] = v
+	c.instrCacheMu.Unlock()
+	return v, nil
+}
+
 // BondByUID returns bond-specific reference data.
 func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
 	req := instrumentRequest{IDType: "INSTRUMENT_ID_TYPE_UID", ID: uid}
@@ -171,6 +189,24 @@ func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
 		return nil, err
 	}
 	return &resp.Instrument, nil
+}
+
+// BondByUIDCached is like BondByUID but uses an in-memory cache.
+func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error) {
+	c.bondCacheMu.RLock()
+	if v, ok := c.bondShortCache[uid]; ok {
+		c.bondCacheMu.RUnlock()
+		return v, nil
+	}
+	c.bondCacheMu.RUnlock()
+	v, err := c.BondByUID(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	c.bondCacheMu.Lock()
+	c.bondShortCache[uid] = v
+	c.bondCacheMu.Unlock()
+	return v, nil
 }
 
 // Coupons returns coupon events for a bond within [from, to].

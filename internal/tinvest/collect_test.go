@@ -79,7 +79,7 @@ func TestCollectSandbox(t *testing.T) {
 	c.Sandbox = true
 
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	snap, err := c.Collect(context.Background(), "sandbox", "", now)
+	snap, err := c.Collect(context.Background(), "sandbox", "", now, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
