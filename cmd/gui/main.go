@@ -381,11 +381,24 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop) *grid {
 		}
 		cell := o.(*tableCell)
 		cell.set(value, key, id.Row%2 == 0)
-		// Wire the cell tap directly to the row card popup, bypassing the
-		// unreliable Fyne event-bubbling chain.
-		if g.onRow != nil && id.Row < len(g.visible) {
+		// Wire the cell tap: for group headers toggle collapse, for data
+		// rows trigger the card popup directly — both bypass Fyne's
+		// unreliable event-bubbling chain.
+		if id.Row < len(g.visible) {
 			row := g.visible[id.Row]
-			cell.onTap = func() { g.onRow(row) }
+			first := ""
+			if len(row) > 0 {
+				first = row[0]
+			}
+			if strings.HasPrefix(first, "▾ ") || strings.HasPrefix(first, "▸ ") {
+				key := strings.TrimPrefix(strings.TrimPrefix(first, "▾ "), "▸ ")
+				cell.onTap = func() {
+					g.collapsed[key] = !g.collapsed[key]
+					g.apply()
+				}
+			} else if g.onRow != nil {
+				cell.onTap = func() { g.onRow(row) }
+			}
 		}
 	})
 	g.table.ShowHeaderRow = true
