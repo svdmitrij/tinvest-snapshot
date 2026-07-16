@@ -41,11 +41,21 @@ type Client struct {
 	bCoalesce       map[string]chan struct{}
 	cooldownMu      sync.Mutex
 	cooldownUntil   time.Time
+	nextEnrichment  time.Time
 }
 
 func (c *Client) enrichmentCall(ctx context.Context, service, method string, req, out any) error {
 	c.cooldownMu.Lock()
-	wait := time.Until(c.cooldownUntil)
+	now := time.Now()
+	start := c.cooldownUntil
+	if c.nextEnrichment.After(start) {
+		start = c.nextEnrichment
+	}
+	if start.Before(now) {
+		start = now
+	}
+	c.nextEnrichment = start.Add(150 * time.Millisecond)
+	wait := time.Until(start)
 	c.cooldownMu.Unlock()
 	if wait > 0 {
 		select {
@@ -60,7 +70,7 @@ func (c *Client) enrichmentCall(ctx context.Context, service, method string, req
 		c.cooldownMu.Lock()
 		until := time.Now().Add(api.RetryAfter)
 		if until.After(c.cooldownUntil) {
-			c.cooldownUntil = until
+			c.cooldownUntil, c.nextEnrichment = until, until
 		}
 		c.cooldownMu.Unlock()
 	}
