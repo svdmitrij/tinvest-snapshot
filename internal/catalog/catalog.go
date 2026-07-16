@@ -87,6 +87,7 @@ type Filter struct {
 	Type, Query, Currency, Exchange, Sector, Risk, CouponType string
 	Frequency, CouponMonth                                    int
 	RateFrom, RateTo                                          *float64
+	MaturityFrom, MaturityTo                                  *time.Time
 	Dividends                                                 *bool
 	SortBy                                                    string
 	Desc                                                      bool
@@ -119,6 +120,12 @@ func Search(all []Instrument, f Filter) []Instrument {
 				continue
 			}
 		}
+		if f.MaturityFrom != nil || f.MaturityTo != nil {
+			maturity, err := parseDate(v.MaturityDate)
+			if err != nil || f.MaturityFrom != nil && maturity.Before(*f.MaturityFrom) || f.MaturityTo != nil && maturity.After(*f.MaturityTo) {
+				continue
+			}
+		}
 		out = append(out, v)
 	}
 	key := func(v Instrument) string {
@@ -143,6 +150,26 @@ func Search(all []Instrument, f Filter) []Instrument {
 		return strings.ToLower(key(out[i])) < strings.ToLower(key(out[j]))
 	})
 	return out
+}
+
+func parseDate(raw string) (time.Time, error) {
+	if d, err := time.Parse(time.RFC3339, raw); err == nil {
+		return d.UTC().Truncate(24 * time.Hour), nil
+	}
+	return time.Parse("2006-01-02", raw)
+}
+
+// Date parses a user-entered ISO calendar date. Invalid and empty values do
+// not activate a filter, matching Float's behaviour for numeric filters.
+func Date(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil
+	}
+	return &d
 }
 func Float(s string) *float64 {
 	if s == "" {

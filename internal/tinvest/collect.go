@@ -32,6 +32,7 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 	}
 
 	grand := map[string]float64{}
+	accounts = activeInvestmentAccounts(accounts)
 	for i, a := range accounts {
 		if onProgress != nil {
 			onProgress(i+1, len(accounts))
@@ -52,6 +53,16 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 		c.applyConversion(ctx, snap, targetCurrency)
 	}
 	return snap, nil
+}
+
+func activeInvestmentAccounts(accounts []apiAccount) []apiAccount {
+	active := make([]apiAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Status == "ACCOUNT_STATUS_OPEN" && (account.Type == "ACCOUNT_TYPE_TINKOFF" || account.Type == "ACCOUNT_TYPE_TINKOFF_IIS") {
+			active = append(active, account)
+		}
+	}
+	return active
 }
 
 // CollectOperations fetches operations across all accounts within the period.

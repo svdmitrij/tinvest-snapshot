@@ -47,17 +47,19 @@ var translations embed.FS
 var embeddedConfigBytes []byte
 
 type desktop struct {
-	mu                                 sync.RWMutex
-	window                             fyne.Window
-	configPath, cachePath              string
-	cfg                                *config.Config
-	snapshot                           *model.Snapshot
-	cache                              *catalog.Cache
-	text                               map[string]string
-	portfolio, operations, instruments *grid
-	from, to                           *widget.DateEntry
-	status                             *widget.Label
-	refreshStop                        chan struct{}
+	mu                                                      sync.RWMutex
+	window                                                  fyne.Window
+	configPath, cachePath                                   string
+	cfg                                                     *config.Config
+	snapshot                                                *model.Snapshot
+	cache                                                   *catalog.Cache
+	text                                                    map[string]string
+	portfolio, operations, instruments                      *grid
+	from, to                                                *widget.DateEntry
+	status                                                  *widget.Label
+	portfolioVisited, operationsVisited, instrumentsVisited bool
+	loadInstruments                                         func(bool)
+	resetInstrumentFilters                                  func()
 }
 
 type grid struct {
@@ -291,13 +293,13 @@ func (d *desktop) build() {
 	d.status = widget.NewLabel("")
 
 	portfolioBar := container.NewHBox(
-		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
+		button(d.tr("refresh"), widget.HighImportance, d.refreshPortfolio),
 		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }),
 		d.makeScaleBar(d.portfolio, &d.cfg.FontScalePortfolio))
 	operationsBar := container.NewHBox(
 		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
 		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
-		button(d.tr("refresh"), widget.HighImportance, func() { d.refreshPortfolio() }),
+		button(d.tr("refresh"), widget.HighImportance, d.refreshOperations),
 		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }),
 		d.makeScaleBar(d.operations, &d.cfg.FontScaleOperations))
 	// Left-click on a position/operation row opens the instrument card with a
@@ -306,6 +308,16 @@ func (d *desktop) build() {
 	d.operations.onRow = func(row []string) { d.showRowCard(row, operationFields) }
 	searchTab := d.instrumentTab()
 	tabs := container.NewAppTabs(container.NewTabItem(d.tr("portfolio"), container.NewBorder(portfolioBar, nil, nil, nil, d.portfolio.root)), container.NewTabItem(d.tr("operations"), container.NewBorder(operationsBar, nil, nil, nil, d.operations.root)), container.NewTabItem(d.tr("instruments"), searchTab), container.NewTabItem(d.tr("settings"), d.settingsTab()))
+	tabs.OnSelected = func(item *container.TabItem) {
+		switch item.Text {
+		case d.tr("portfolio"):
+			d.showPortfolio()
+		case d.tr("operations"):
+			d.showOperations()
+		case d.tr("instruments"):
+			d.showInstruments()
+		}
+	}
 	// Wrap the whole tab area in a scrollable container so the user can reach
 	// every field even when the window is smaller than the content.
 	d.window.SetContent(container.NewBorder(nil, d.status, nil, nil, container.NewScroll(tabs)))
@@ -315,12 +327,9 @@ func (d *desktop) build() {
 		d.portfolio.set(pc, pr)
 		d.operations.set(oc, or)
 	}
-	d.startAutoRefresh()
-	// Load portfolio and operations immediately on first launch instead of
-	// waiting for the auto-refresh timer or a manual click.
-	if d.snapshot == nil {
-		d.refreshPortfolio()
-	}
+	// The initially selected tab follows the same lazy-loading rule as every
+	// later selection. No background refresh may fetch data from another tab.
+	d.showPortfolio()
 }
 
 // applyFontScale updates column widths and refreshes the table for a new font scale.
@@ -356,30 +365,6 @@ func (d *desktop) makeScaleBar(g *grid, scalePtr *int) *fyne.Container {
 		}
 	})
 	return container.NewHBox(minus, plus, label)
-}
-
-func (d *desktop) startAutoRefresh() {
-	if d.refreshStop != nil {
-		close(d.refreshStop)
-		d.refreshStop = nil
-	}
-	if d.cfg.AutoRefreshMinutes <= 0 {
-		return
-	}
-	stop := make(chan struct{})
-	d.refreshStop = stop
-	go func(period time.Duration) {
-		ticker := time.NewTicker(period)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				d.refreshPortfolio()
-			case <-stop:
-				return
-			}
-		}
-	}(time.Duration(d.cfg.AutoRefreshMinutes) * time.Minute)
 }
 
 // calmTheme keeps Fyne's light base but replaces the loud default accent with a
@@ -853,10 +838,6 @@ func (d *desktop) busy(label string, fn func() error) {
 func (d *desktop) refreshPortfolio() {
 	d.busy(d.tr("loading"), func() error {
 		now := time.Now()
-		win, e := period.Resolve(dateText(d.from), dateText(d.to), d.cfg.ReportsDir, now)
-		if e != nil {
-			return e
-		}
 		c, e := d.client()
 		if e != nil {
 			return e
@@ -871,24 +852,70 @@ func (d *desktop) refreshPortfolio() {
 		if e != nil {
 			return e
 		}
-		ops, p, e := c.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
-			fyne.Do(func() {
-				d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total))
-			})
-		})
-		if e != nil {
-			return e
-		}
-		snap.Operations = ops
-		snap.OperationsPeriod = &p
 		d.mu.Lock()
+		if d.snapshot != nil {
+			snap.Operations, snap.OperationsPeriod = d.snapshot.Operations, d.snapshot.OperationsPeriod
+		}
 		d.snapshot = snap
 		d.mu.Unlock()
 		pc, pr := portfolioRows(snap, d.tr)
-		oc, or := operationRows(snap, d.tr, *d.cfg.TimezoneOffset)
-		fyne.Do(func() { d.portfolio.set(pc, pr); d.operations.set(oc, or) })
+		fyne.Do(func() { d.portfolio.set(pc, pr); d.portfolio.group.SetSelected(d.tr("col_account")) })
 		return nil
 	})
+}
+
+func (d *desktop) refreshOperations() {
+	d.busy(d.tr("loading_ops"), func() error {
+		now := time.Now()
+		win, err := period.Resolve(dateText(d.from), dateText(d.to), d.cfg.ReportsDir, now)
+		if err != nil {
+			return err
+		}
+		client, err := d.client()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		operations, operationPeriod, err := client.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
+			fyne.Do(func() { d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total)) })
+		})
+		if err != nil {
+			return err
+		}
+		d.mu.Lock()
+		if d.snapshot == nil {
+			d.snapshot = &model.Snapshot{}
+		}
+		d.snapshot.Operations, d.snapshot.OperationsPeriod = operations, &operationPeriod
+		snapshot := d.snapshot
+		d.mu.Unlock()
+		cols, rows := operationRows(snapshot, d.tr, *d.cfg.TimezoneOffset)
+		fyne.Do(func() { d.operations.set(cols, rows) })
+		return nil
+	})
+}
+
+func (d *desktop) showPortfolio() {
+	d.portfolio.group.SetSelected(d.tr("col_account"))
+	if !d.portfolioVisited {
+		d.portfolioVisited = true
+		d.refreshPortfolio()
+	}
+}
+
+func (d *desktop) showOperations() {
+	if !d.operationsVisited {
+		d.operationsVisited = true
+		d.refreshOperations()
+	}
+}
+
+func (d *desktop) showInstruments() {
+	if !d.instrumentsVisited && d.loadInstruments != nil {
+		d.instrumentsVisited = true
+		d.loadInstruments(true)
+	}
 }
 func (d *desktop) exportAll() {
 	d.mu.RLock()
@@ -1180,12 +1207,13 @@ func (d *desktop) enrichOne(uid string) error {
 
 func (d *desktop) instrumentTab() fyne.CanvasObject {
 	d.instruments.onRow = func(row []string) { d.showInstrumentCard(row) }
-	typeOptions := make([]string, len(instrumentTypes))
-	for i, t := range instrumentTypes {
-		typeOptions[i] = d.tr("type_" + t)
+	typeOptions := make([]string, 0, len(instrumentTypes)+1)
+	typeOptions = append(typeOptions, d.tr("all"))
+	for _, t := range instrumentTypes {
+		typeOptions = append(typeOptions, d.tr("type_"+t))
 	}
 	typeSelect := widget.NewSelect(typeOptions, nil)
-	typeSelect.SetSelected(d.tr("type_share"))
+	typeSelect.SetSelected(d.tr("all"))
 	currency := widget.NewSelect(append([]string{d.tr("all")}, currencyOptions(d.cache, "")...), nil)
 	currency.SetSelected(d.tr("all"))
 	exchange, sector := widget.NewEntry(), widget.NewEntry()
@@ -1198,6 +1226,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	rateFrom, rateTo := widget.NewEntry(), widget.NewEntry()
 	rateFrom.SetPlaceHolder(d.tr("rate_from"))
 	rateTo.SetPlaceHolder(d.tr("rate_to"))
+	maturityFrom, maturityTo := widget.NewEntry(), widget.NewEntry()
+	maturityFrom.SetPlaceHolder("YYYY-MM-DD")
+	maturityTo.SetPlaceHolder("YYYY-MM-DD")
 	monthNames := append([]string{""}, localizedMonthNames(d)...)
 	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
@@ -1209,7 +1240,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if e != nil {
 				return e
 			}
-			if d.cache == nil || force || !d.cache.Fresh(time.Duration(d.cfg.CatalogTTLHours)*time.Hour, time.Now()) {
+			if d.cache == nil && !force {
+				return fmt.Errorf("%s", d.tr("refresh_first"))
+			}
+			if force {
 				items, e := client.Catalog(context.Background(), time.Now())
 				if e != nil {
 					return e
@@ -1242,7 +1276,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				v := dividends.Selected == d.tr("yes")
 				dividendFilter = &v
 			}
-			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
+			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), MaturityFrom: catalog.Date(maturityFrom.Text), MaturityTo: catalog.Date(maturityTo.Text), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
 			items := catalog.Search(d.cache.Instruments, f)
 			cols, rows := instrumentRows(items, d)
 			options := append([]string{d.tr("all")}, currencyOptions(d.cache, "")...)
@@ -1255,11 +1289,28 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			return nil
 		})
 	}
-	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo} {
+	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo, maturityFrom, maturityTo} {
 		e.OnSubmitted = func(string) { load(false) }
 	}
 	for _, s := range []*widget.Select{typeSelect, currency, risk, frequency, couponType, dividends, month} {
 		s.OnChanged = func(string) { load(false) }
+	}
+	d.loadInstruments = load
+	d.resetInstrumentFilters = func() {
+		typeSelect.SetSelected(d.tr("all"))
+		currency.SetSelected(d.tr("all"))
+		exchange.SetText("")
+		sector.SetText("")
+		risk.SetSelected("")
+		frequency.SetSelected("")
+		couponType.SetSelected("")
+		dividends.SetSelected("")
+		rateFrom.SetText("")
+		rateTo.SetText("")
+		maturityFrom.SetText("")
+		maturityTo.SetText("")
+		month.SetSelected("")
+		load(false)
 	}
 	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)),
 		labeled(d.tr("cap_type"), typeSelect),
@@ -1272,8 +1323,11 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		labeled(d.tr("cap_dividends"), dividends),
 		labeled(d.tr("rate_from"), rateFrom),
 		labeled(d.tr("rate_to"), rateTo),
+		labeled(d.tr("maturity_from"), maturityFrom),
+		labeled(d.tr("maturity_to"), maturityTo),
 		labeled(d.tr("coupon_month"), month),
 		labeled(" ", button(d.tr("search"), widget.HighImportance, func() { load(false) })),
+		labeled(" ", button(d.tr("reset_filters"), widget.MediumImportance, d.resetInstrumentFilters)),
 		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
 		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
 	if d.cache != nil {
