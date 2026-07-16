@@ -141,6 +141,39 @@ func TestCacheFreshHonorsTTLBoundary(t *testing.T) {
 	}
 }
 
+func TestInstrumentRefreshHasDedicatedTimeout(t *testing.T) {
+	if instrumentRefreshTimeout != 180*time.Second {
+		t.Fatalf("instrument refresh timeout = %s, want 180s", instrumentRefreshTimeout)
+	}
+	if refreshTimeout != 30*time.Second {
+		t.Fatalf("ordinary refresh timeout = %s, want 30s", refreshTimeout)
+	}
+}
+
+func TestFreshInstrumentCacheUsesImmediateLocalPath(t *testing.T) {
+	called := make(chan bool, 1)
+	d := &desktop{
+		cfg:   &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
+		cache: &catalog.Cache{Mode: "sandbox", UpdatedAt: time.Now(), Instruments: []catalog.Instrument{{UID: "bond"}}},
+		loadInstruments: func(force bool) {
+			called <- force
+		},
+	}
+	started := time.Now()
+	d.showInstruments()
+	select {
+	case force := <-called:
+		if force {
+			t.Fatal("fresh cache must not request a network refresh")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh cache path waited instead of completing locally")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("fresh cache path took %s", elapsed)
+	}
+}
+
 func TestSnapshotCachesKeepPortfolioAndOperationRange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operations.json")
 	cache := snapshotCache{UpdatedAt: time.Now(), Mode: "sandbox", From: "2026-07-01T00:00:00Z", To: "2026-07-16T23:59:59Z", Snapshot: &model.Snapshot{Operations: []model.Operation{{ID: "op"}}}}

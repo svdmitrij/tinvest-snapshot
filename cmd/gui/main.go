@@ -65,7 +65,10 @@ type desktop struct {
 	refreshing                                                     map[string]bool
 }
 
-const refreshTimeout = 30 * time.Second
+const (
+	refreshTimeout           = 30 * time.Second
+	instrumentRefreshTimeout = 180 * time.Second
+)
 
 type grid struct {
 	mu                     sync.RWMutex
@@ -1518,7 +1521,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), instrumentRefreshTimeout)
 			defer cancel()
 			items, err := client.Catalog(ctx, time.Now())
 			if err != nil {

@@ -144,9 +144,12 @@ func TestEnrichCatalogRejectsPartialCouponFailure(t *testing.T) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	}))
 	defer server.Close()
-	_, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
+	got, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "GetBondCoupons uid=uid figi=RU000A102LF6") {
 		t.Fatalf("partial coupon failure was accepted: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("partial catalog was returned: %#v", got)
 	}
 }
 
@@ -214,6 +217,54 @@ func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
 	defer mu.Unlock()
 	if rejected == 0 || len(requests) < 60 {
 		t.Fatalf("quota requests=%d rejected=%d", len(requests), rejected)
+	}
+}
+
+func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
+	// The test compresses the one-second seven-request quota window by 20x:
+	// 50 ms models one API second, so nine seconds model the 180-second GUI limit.
+	const quotaWindow = 50 * time.Millisecond
+	const scaledTimeout = 9 * time.Second
+	var mu sync.Mutex
+	var requests []time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		now := time.Now()
+		requests = append(requests, now)
+		count := 0
+		for _, at := range requests {
+			if now.Sub(at) < quotaWindow {
+				count++
+			}
+		}
+		mu.Unlock()
+		if count > 7 {
+			http.Error(w, "quota", http.StatusTooManyRequests)
+			return
+		}
+		// Keep the three workers below the compressed seven-request window.
+		time.Sleep(quotaWindow / 2)
+		if strings.HasSuffix(r.URL.Path, "/GetBondCoupons") {
+			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
+			return
+		}
+		w.Write([]byte(`{"events":[]}`))
+	}))
+	defer server.Close()
+	items := make([]catalog.Instrument, 400)
+	for i := range items {
+		items[i] = catalog.Instrument{Type: "bond", UID: fmt.Sprintf("uid-%d", i), FIGI: fmt.Sprintf("figi-%d", i)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scaledTimeout)
+	defer cancel()
+	got, err := New(server.URL, "token", "test", 3, quotaWindow, nil).EnrichCatalog(ctx, items, time.Now())
+	if err != nil || len(got) != len(items) {
+		t.Fatalf("full quota enrichment: items=%d err=%v", len(got), err)
+	}
+	for _, item := range got {
+		if !item.Enriched {
+			t.Fatal("full quota enrichment returned a partial catalog")
+		}
 	}
 }
 
