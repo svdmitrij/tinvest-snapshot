@@ -1415,7 +1415,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		currentFilter := filter()
 		if !force {
 			applyFilters()
-			if currentFilter.Type != "bond" && currentFilter.RateFrom == nil && currentFilter.RateTo == nil && currentFilter.CouponMonth == 0 && currentFilter.Dividends == nil {
+			if !needsInstrumentEnrichment(currentFilter) {
 				return
 			}
 			d.mu.RLock()
@@ -1468,7 +1468,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			f := currentFilter
 			// Bond rate and coupon-month select boxes need enriched values before
 			// the user can make their first choice, so enrich the default bond view.
-			if f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil {
+			if needsInstrumentEnrichment(f) {
 				base := f
 				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
 				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
@@ -1537,6 +1537,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	}
 	scaleBar := d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments)
 	return container.NewBorder(container.NewVBox(bar, updated, scaleBar), nil, nil, nil, d.instruments.root)
+}
+
+func needsInstrumentEnrichment(f catalog.Filter) bool {
+	return f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil
 }
 
 // instrumentEnrichmentKey only coalesces identical enrichment requests. A

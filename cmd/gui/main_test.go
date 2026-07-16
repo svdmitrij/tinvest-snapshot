@@ -112,6 +112,17 @@ func TestInstrumentEnrichmentKeyDistinguishesCandidateSets(t *testing.T) {
 	}
 }
 
+func TestBondFilterRequestsEnrichmentAfterReset(t *testing.T) {
+	share := catalog.Filter{Type: "share"}
+	bond := catalog.Filter{Type: "bond"}
+	if needsInstrumentEnrichment(share) {
+		t.Fatal("share-only catalog refresh must not enrich bonds")
+	}
+	if !needsInstrumentEnrichment(bond) {
+		t.Fatal("returning to bonds after a non-bond refresh must enrich rate and coupon data")
+	}
+}
+
 func TestCurrencyOptionsCoverCatalogAndConfigured(t *testing.T) {
 	cache := &catalog.Cache{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}
 	options := currencyOptions(cache, "gel")
