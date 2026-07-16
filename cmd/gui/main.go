@@ -1555,7 +1555,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 }
 
 func needsInstrumentEnrichment(f catalog.Filter) bool {
-	return f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil
+	return f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.MaturityFrom != nil || f.MaturityTo != nil || f.CouponMonth > 0 || f.Dividends != nil
 }
 
 // enrichmentFilter keeps only fields known before the deferred API calls.

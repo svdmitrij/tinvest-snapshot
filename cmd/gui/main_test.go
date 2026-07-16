@@ -124,6 +124,10 @@ func TestBondFilterRequestsEnrichmentAfterReset(t *testing.T) {
 	if !needsInstrumentEnrichment(bond) {
 		t.Fatal("returning to bonds after a non-bond refresh must enrich rate and coupon data")
 	}
+	maturity := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !needsInstrumentEnrichment(catalog.Filter{MaturityTo: &maturity}) {
+		t.Fatal("a maturity range must enrich bonds even when instrument type is all")
+	}
 }
 
 func TestEnrichmentCandidatesIgnoreRawMaturityRange(t *testing.T) {
