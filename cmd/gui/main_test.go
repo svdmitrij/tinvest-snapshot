@@ -20,7 +20,7 @@ func TestInstrumentRowsShowBondSchedules(t *testing.T) {
 		{Type: "bond", UID: "u1", Amortized: true,
 			MaturityDate:      "2027-04-11T00:00:00Z",
 			AmortizationDates: []string{"2026-06-25", "2026-12-22"},
-			OfferDates:        []string{"2027-01-23"}},
+			OfferDates:        []string{"2027-01-23"}, LastPrice: "98.7%"},
 		{Type: "bond", UID: "u2"},
 	}
 	_, rows := instrumentRows(items, d)
@@ -37,6 +37,9 @@ func TestInstrumentRowsShowBondSchedules(t *testing.T) {
 	}
 	if got := fieldOf(amortized, "offer_dates"); got != "2027-01-23" {
 		t.Errorf("offer dates = %q", got)
+	}
+	if got := fieldOf(amortized, "last_price"); got != "98.7%" {
+		t.Errorf("last price = %q", got)
 	}
 
 	if got := fieldOf(plain, "amortization"); got != d.tr("no") {

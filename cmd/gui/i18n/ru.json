@@ -21,7 +21,7 @@
   "col_total_amount":"Итого","col_converted_amount":"Итого (пересчёт)","col_converted_currency":"Валюта пересчёта","col_conversion_rate":"Курс пересчёта",
   "col_id":"ID операции","col_datetime":"Дата и время","col_payment_amount":"Сумма","col_payment_currency":"Валюта суммы","col_state":"Статус",
   "col_exchange":"Биржа","col_sector":"Сектор","col_risk_level":"Уровень риска","col_coupon_type":"Тип купона","col_dividends":"Дивиденды",
-  "col_nominal":"Номинал","col_maturity_date":"Дата погашения","col_uid":"UID","col_figi":"FIGI",
+  "col_nominal":"Номинал","col_maturity_date":"Дата погашения","col_last_price":"Последняя цена","col_uid":"UID","col_figi":"FIGI",
 
   "month_jan":"Январь","month_feb":"Февраль","month_mar":"Март","month_apr":"Апрель","month_may":"Май","month_jun":"Июнь",
   "month_jul":"Июль","month_aug":"Август","month_sep":"Сентябрь","month_oct":"Октябрь","month_nov":"Ноябрь","month_dec":"Декабрь"

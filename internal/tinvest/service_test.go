@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dmitry/tinvest-snapshot/internal/catalog"
+	"github.com/dmitry/tinvest-snapshot/internal/money"
 )
 
 func TestCatalogLoadsDirectoriesConcurrently(t *testing.T) {
@@ -28,5 +31,17 @@ func TestCatalogLoadsDirectoriesConcurrently(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
 		t.Fatalf("Catalog took %s; directories must load concurrently", elapsed)
+	}
+}
+
+func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {
+	price := lastPrice{Price: money.Quotation{Units: 123, Nano: 450000000}}
+	cases := []struct{ kind, currency, want string }{
+		{"share", "rub", "123.45 RUB"}, {"bond", "rub", "123.45%"}, {"future", "rub", "123.45 points"}, {"currency", "usd", "123.45 USD"},
+	}
+	for _, tc := range cases {
+		if got := formatLastPrice(catalog.Instrument{Type: tc.kind, Currency: tc.currency}, price); got != tc.want {
+			t.Errorf("%s price = %q, want %q", tc.kind, got, tc.want)
+		}
 	}
 }

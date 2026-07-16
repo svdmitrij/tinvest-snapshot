@@ -21,7 +21,7 @@
   "col_total_amount":"Total","col_converted_amount":"Total (converted)","col_converted_currency":"Conversion currency","col_conversion_rate":"Conversion rate",
   "col_id":"Operation ID","col_datetime":"Date and time","col_payment_amount":"Amount","col_payment_currency":"Amount currency","col_state":"State",
   "col_exchange":"Exchange","col_sector":"Sector","col_risk_level":"Risk level","col_coupon_type":"Coupon type","col_dividends":"Dividends",
-  "col_nominal":"Nominal","col_maturity_date":"Maturity date","col_uid":"UID","col_figi":"FIGI",
+  "col_nominal":"Nominal","col_maturity_date":"Maturity date","col_last_price":"Last price","col_uid":"UID","col_figi":"FIGI",
 
   "month_jan":"January","month_feb":"February","month_mar":"March","month_apr":"April","month_may":"May","month_jun":"June",
   "month_jul":"July","month_aug":"August","month_sep":"September","month_oct":"October","month_nov":"November","month_dec":"December"

@@ -3,6 +3,7 @@ package tinvest
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRedemptionScheduleSplitsAmortizationAndOffers(t *testing.T) {
@@ -18,6 +19,18 @@ func TestRedemptionScheduleSplitsAmortizationAndOffers(t *testing.T) {
 	}
 	if strings.Join(offers, ",") != "2027-01-23" {
 		t.Errorf("offers = %v, want the CALL date", offers)
+	}
+}
+
+func TestEffectiveMaturityUsesNearestFutureOffer(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	got := effectiveMaturity("2030-12-13", []string{"2026-01-01", "2027-03-10", "2026-09-11"}, now)
+	if got != "2026-09-11" {
+		t.Fatalf("effective maturity = %q, want nearest future offer", got)
+	}
+	got = effectiveMaturity("2030-12-13", []string{"2026-01-01"}, now)
+	if got != "2030-12-13" {
+		t.Fatalf("effective maturity without future offers = %q", got)
 	}
 }
 

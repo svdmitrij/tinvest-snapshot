@@ -13,24 +13,26 @@ import (
 )
 
 type Instrument struct {
-	UID             string   `json:"uid"`
-	FIGI            string   `json:"figi"`
-	Type            string   `json:"type"`
-	Ticker          string   `json:"ticker"`
-	Name            string   `json:"name"`
-	ISIN            string   `json:"isin"`
-	Currency        string   `json:"currency"`
-	Exchange        string   `json:"exchange"`
-	Sector          string   `json:"sector"`
-	RiskLevel       string   `json:"risk_level"`
-	CouponFrequency int      `json:"coupon_frequency"`
-	FloatingCoupon  bool     `json:"floating_coupon"`
-	CouponRatePct   *float64 `json:"coupon_rate_pct,omitempty"`
-	NextCouponDate  string   `json:"next_coupon_date"`
-	HasDividends    bool     `json:"has_dividends"`
-	Enriched        bool     `json:"enriched,omitempty"`
-	Nominal         string   `json:"nominal,omitempty"`
-	MaturityDate    string   `json:"maturity_date,omitempty"`
+	UID                     string   `json:"uid"`
+	FIGI                    string   `json:"figi"`
+	Type                    string   `json:"type"`
+	Ticker                  string   `json:"ticker"`
+	Name                    string   `json:"name"`
+	ISIN                    string   `json:"isin"`
+	Currency                string   `json:"currency"`
+	Exchange                string   `json:"exchange"`
+	Sector                  string   `json:"sector"`
+	RiskLevel               string   `json:"risk_level"`
+	CouponFrequency         int      `json:"coupon_frequency"`
+	FloatingCoupon          bool     `json:"floating_coupon"`
+	CouponRatePct           *float64 `json:"coupon_rate_pct,omitempty"`
+	NextCouponDate          string   `json:"next_coupon_date"`
+	HasDividends            bool     `json:"has_dividends"`
+	Enriched                bool     `json:"enriched,omitempty"`
+	Nominal                 string   `json:"nominal,omitempty"`
+	MaturityDate            string   `json:"maturity_date,omitempty"`
+	ContractualMaturityDate string   `json:"contractual_maturity_date,omitempty"`
+	LastPrice               string   `json:"last_price,omitempty"`
 
 	// Amortized is known from the bond directory; the schedules below are only
 	// filled once the instrument is enriched with its bond events.

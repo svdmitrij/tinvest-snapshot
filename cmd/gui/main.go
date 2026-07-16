@@ -1002,7 +1002,7 @@ var portfolioFields = []string{"row_kind", "account", "account_id", "type", "tic
 
 var operationFields = []string{"id", "account_id", "account_name", "datetime", "operation_type", "instrument_type", "ticker", "isin", "name", "quantity", "payment_amount", "payment_currency", "state"}
 
-var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "amortization", "amortization_dates", "offer_dates", "uid", "figi"}
+var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "last_price", "amortization", "amortization_dates", "offer_dates", "uid", "figi"}
 
 func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
 	cols := trCols(tr, portfolioFields...)
@@ -1155,6 +1155,7 @@ func (d *desktop) showCardDialog(row []string) {
 		}
 	}
 	label := widget.NewLabel(b.String())
+	label.Wrapping = fyne.TextWrapWord
 	content := container.NewVBox(label)
 	if url != "" {
 		link := widget.NewHyperlink(d.tr("open_on_site"), nil)
@@ -1199,7 +1200,9 @@ func (d *desktop) showRowCard(row []string, fields []string) {
 	}
 	if name != "" {
 		dialogTitle := d.tr("details") + ": " + name
-		content := container.NewVBox(widget.NewLabel(b.String()))
+		label := widget.NewLabel(b.String())
+		label.Wrapping = fyne.TextWrapWord
+		content := container.NewVBox(label)
 		if url != "" {
 			link := widget.NewHyperlink(d.tr("open_on_site"), nil)
 			link.OnTapped = func() { openBrowser(url) }
@@ -1277,7 +1280,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	couponType := widget.NewSelect([]string{"", d.tr("fixed"), d.tr("floating")}, nil)
 	dividends := widget.NewSelect([]string{"", d.tr("yes"), d.tr("no")}, nil)
 	rateFrom, rateTo := widget.NewSelect([]string{}, nil), widget.NewSelect([]string{}, nil)
-	maturityFrom, maturityTo := widget.NewDateEntry(), widget.NewDateEntry()
+	maturityFrom, maturityTo := widget.NewSelect([]string{}, nil), widget.NewSelect([]string{}, nil)
 	monthNames := append([]string{""}, localizedMonthNames(d)...)
 	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
@@ -1287,7 +1290,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			v := dividends.Selected == d.tr("yes")
 			dividendFilter = &v
 		}
-		return catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Selected, Sector: sector.Selected, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Selected), RateTo: catalog.Float(rateTo.Selected), MaturityFrom: catalog.Date(dateText(maturityFrom)), MaturityTo: catalog.Date(dateText(maturityTo)), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
+		return catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Selected, Sector: sector.Selected, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Selected), RateTo: catalog.Float(rateTo.Selected), MaturityFrom: catalog.Date(maturityFrom.Selected), MaturityTo: catalog.Date(maturityTo.Selected), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
 	}
 	applyFilters := func() {
 		d.mu.RLock()
@@ -1330,6 +1333,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				f.RateFrom = nil
 			case "to":
 				f.RateTo = nil
+			case "maturity_from":
+				f.MaturityFrom = nil
+			case "maturity_to":
+				f.MaturityTo = nil
 			case "month":
 				f.CouponMonth = 0
 			}
@@ -1409,6 +1416,18 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			rates = slices.DeleteFunc(rates, func(v string) bool { x, _ := strconv.ParseFloat(v, 64); return x < limit })
 		}
 		setOptions(rateTo, rates)
+		maturities := values(facet("maturity_from"), func(item catalog.Instrument) string { return maturityDay(item.MaturityDate, d) })
+		maturities = slices.DeleteFunc(maturities, func(value string) bool { return value == d.tr("na") })
+		if maturityTo.Selected != "" {
+			maturities = slices.DeleteFunc(maturities, func(value string) bool { return value > maturityTo.Selected })
+		}
+		setOptions(maturityFrom, maturities)
+		maturities = values(facet("maturity_to"), func(item catalog.Instrument) string { return maturityDay(item.MaturityDate, d) })
+		maturities = slices.DeleteFunc(maturities, func(value string) bool { return value == d.tr("na") })
+		if maturityFrom.Selected != "" {
+			maturities = slices.DeleteFunc(maturities, func(value string) bool { return value < maturityFrom.Selected })
+		}
+		setOptions(maturityTo, maturities)
 		updated.SetText(d.tr("catalog_updated") + ": " + cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 	}
 	load := func(force bool) {
@@ -1492,9 +1511,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			return nil
 		})
 	}
-	maturityFrom.OnChanged = func(*time.Time) { load(false) }
-	maturityTo.OnChanged = func(*time.Time) { load(false) }
-	for _, s := range []*widget.Select{typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, month} {
+	for _, s := range []*widget.Select{typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, maturityFrom, maturityTo, month} {
 		s.OnChanged = func(string) { load(false) }
 	}
 	d.loadInstruments = load
@@ -1509,8 +1526,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		dividends.SetSelected("")
 		rateFrom.SetSelected("")
 		rateTo.SetSelected("")
-		maturityFrom.SetDate(nil)
-		maturityTo.SetDate(nil)
+		maturityFrom.SetSelected("")
+		maturityTo.SetSelected("")
 		month.SetSelected("")
 		load(false)
 	}
@@ -1634,7 +1651,7 @@ func typeAPI(label string, d *desktop) string {
 			return t
 		}
 	}
-	return "share"
+	return ""
 }
 func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]string) {
 	cols := trCols(d.tr, instrumentFields...)
@@ -1661,7 +1678,7 @@ func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]strin
 			div = d.tr("yes")
 		}
 		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, risk, freq, ct, rate,
-			naIfEmpty(i.NextCouponDate, d), div, naIfEmpty(i.Nominal, d), maturityDay(i.MaturityDate, d),
+			naIfEmpty(i.NextCouponDate, d), div, naIfEmpty(i.Nominal, d), maturityDay(i.MaturityDate, d), naIfEmpty(i.LastPrice, d),
 			amortizationLabel(i, d), dateList(i.AmortizationDates, d), dateList(i.OfferDates, d), i.UID, i.FIGI})
 	}
 	return cols, rows
