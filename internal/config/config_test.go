@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -85,5 +86,27 @@ func TestBaseURLProd(t *testing.T) {
 	c, _ := Load(p)
 	if c.BaseURL() != endpointProd {
 		t.Errorf("BaseURL = %q, want %q", c.BaseURL(), endpointProd)
+	}
+}
+
+func TestCatalogTTLNormalizesOnlyNonPositiveValues(t *testing.T) {
+	for _, tc := range []struct{ raw, want int }{{0, 24}, {-1, 24}, {1, 1}, {1000000, 1000000}} {
+		p := writeTemp(t, `{"token":"x","catalog_ttl_hours":`+strconv.Itoa(tc.raw)+`}`)
+		c, err := Load(p)
+		if err != nil || c.CatalogTTLHours != tc.want {
+			t.Fatalf("ttl %d: got %+v, err %v", tc.raw, c, err)
+		}
+	}
+}
+
+func TestSaveRestoresIndependentScales(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c := &Config{Mode: ModeSandbox, Token: "x", FontScalePortfolio: 80, FontScaleOperations: 120, FontScaleInstruments: 150}
+	if err := c.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil || got.FontScalePortfolio != 80 || got.FontScaleOperations != 120 || got.FontScaleInstruments != 150 {
+		t.Fatalf("scales = %#v, %v", got, err)
 	}
 }

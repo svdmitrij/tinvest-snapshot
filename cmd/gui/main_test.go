@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -127,6 +128,37 @@ func TestBondFilterRequestsEnrichmentAfterReset(t *testing.T) {
 	maturity := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
 	if !needsInstrumentEnrichment(catalog.Filter{MaturityTo: &maturity}) {
 		t.Fatal("a maturity range must enrich bonds even when instrument type is all")
+	}
+}
+
+func TestCacheFreshHonorsTTLBoundary(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	if !cacheFresh(now.Add(-23*time.Hour), 24, now) {
+		t.Fatal("cache one hour before TTL must be fresh")
+	}
+	if cacheFresh(now.Add(-24*time.Hour), 24, now) {
+		t.Fatal("cache at TTL must be stale")
+	}
+}
+
+func TestSnapshotCachesKeepPortfolioAndOperationRange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operations.json")
+	cache := snapshotCache{UpdatedAt: time.Now(), Mode: "sandbox", From: "2026-07-01T00:00:00Z", To: "2026-07-16T23:59:59Z", Snapshot: &model.Snapshot{Operations: []model.Operation{{ID: "op"}}}}
+	if err := saveSnapshotCache(path, cache); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadSnapshotCache(path)
+	if err != nil || got.Mode != cache.Mode || got.From != cache.From || len(got.Snapshot.Operations) != 1 {
+		t.Fatalf("cache round trip: %#v, %v", got, err)
+	}
+}
+
+func TestCatalogEnrichedRequiresEveryInstrument(t *testing.T) {
+	if catalogEnriched([]catalog.Instrument{{Enriched: true}, {Enriched: false}}) {
+		t.Fatal("partial catalog must not be published as complete")
+	}
+	if !catalogEnriched([]catalog.Instrument{{Enriched: true}}) {
+		t.Fatal("complete catalog rejected")
 	}
 }
 

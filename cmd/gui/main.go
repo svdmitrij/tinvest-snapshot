@@ -48,21 +48,21 @@ var translations embed.FS
 var embeddedConfigBytes []byte
 
 type desktop struct {
-	mu                                                      sync.RWMutex
-	window                                                  fyne.Window
-	configPath, cachePath                                   string
-	cfg                                                     *config.Config
-	snapshot                                                *model.Snapshot
-	cache                                                   *catalog.Cache
-	text                                                    map[string]string
-	portfolio, operations, instruments                      *grid
-	from, to                                                *widget.DateEntry
-	status                                                  *widget.Label
-	portfolioVisited, operationsVisited, instrumentsVisited bool
-	loadInstruments                                         func(bool)
-	resetInstrumentFilters                                  func()
-	refreshMu                                               sync.Mutex
-	refreshing                                              map[string]bool
+	mu                                                             sync.RWMutex
+	window                                                         fyne.Window
+	configPath, cachePath, portfolioCachePath, operationsCachePath string
+	cfg                                                            *config.Config
+	snapshot                                                       *model.Snapshot
+	cache                                                          *catalog.Cache
+	text                                                           map[string]string
+	portfolio, operations, instruments                             *grid
+	from, to                                                       *widget.DateEntry
+	status                                                         *widget.Label
+	portfolioVisited, operationsVisited, instrumentsVisited        bool
+	loadInstruments                                                func(bool)
+	resetInstrumentFilters                                         func()
+	refreshMu                                                      sync.Mutex
+	refreshing                                                     map[string]bool
 }
 
 const refreshTimeout = 30 * time.Second
@@ -174,7 +174,8 @@ func main() {
 	a := app.NewWithID("ru.dmitry.tinvest-snapshot")
 	a.Settings().SetTheme(calmTheme{theme.DefaultTheme()})
 	w := a.NewWindow("T-Invest")
-	d := &desktop{window: w, configPath: configPath, cachePath: filepath.Join(cacheRoot, "tinvest-snapshot", "catalog.json"), cfg: cfg}
+	cacheDir := filepath.Join(cacheRoot, "tinvest-snapshot")
+	d := &desktop{window: w, configPath: configPath, cachePath: filepath.Join(cacheDir, "catalog.json"), portfolioCachePath: filepath.Join(cacheDir, "portfolio.json"), operationsCachePath: filepath.Join(cacheDir, "operations.json"), cfg: cfg}
 	d.cache, _ = catalog.Load(d.cachePath)
 	d.loadText()
 	d.build()
@@ -909,6 +910,9 @@ func (d *desktop) refreshPortfolio() {
 		}
 		d.snapshot = snap
 		d.mu.Unlock()
+		if err := saveSnapshotCache(d.portfolioCachePath, snapshotCache{UpdatedAt: now, Mode: d.cfg.Mode, Snapshot: snap}); err != nil {
+			return err
+		}
 		pc, pr := portfolioRows(snap, d.tr)
 		fyne.Do(func() { d.portfolio.set(pc, pr); d.portfolio.group.SetSelected(d.tr("col_account")) })
 		return nil
@@ -918,9 +922,15 @@ func (d *desktop) refreshPortfolio() {
 func (d *desktop) refreshOperations() {
 	d.busy("operations", d.tr("loading_ops"), func() error {
 		now := time.Now()
-		win, err := period.Resolve(dateText(d.from), dateText(d.to), d.cfg.ReportsDir, now)
+		fromText, toText := dateText(d.from), dateText(d.to)
+		win, err := period.Resolve(fromText, toText, d.cfg.ReportsDir, now)
 		if err != nil {
 			return err
+		}
+		if fromText == "" && toText == "" {
+			start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			end := start.AddDate(0, 0, 1).Add(-time.Second)
+			win.GlobalFrom, win.To = &start, end
 		}
 		client, err := d.client()
 		if err != nil {
@@ -941,6 +951,9 @@ func (d *desktop) refreshOperations() {
 		d.snapshot.Operations, d.snapshot.OperationsPeriod = operations, &operationPeriod
 		snapshot := d.snapshot
 		d.mu.Unlock()
+		if err := saveSnapshotCache(d.operationsCachePath, snapshotCache{UpdatedAt: now, Mode: d.cfg.Mode, From: operationPeriod.From, To: operationPeriod.To, Snapshot: &model.Snapshot{Operations: operations, OperationsPeriod: &operationPeriod}}); err != nil {
+			return err
+		}
 		cols, rows := operationRows(snapshot, d.tr, *d.cfg.TimezoneOffset)
 		fyne.Do(func() { d.operations.set(cols, rows) })
 		return nil
@@ -951,6 +964,14 @@ func (d *desktop) showPortfolio() {
 	d.portfolio.group.SetSelected(d.tr("col_account"))
 	if !d.portfolioVisited {
 		d.portfolioVisited = true
+		if cached, err := loadSnapshotCache(d.portfolioCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, time.Now()) {
+			d.mu.Lock()
+			d.snapshot = cached.Snapshot
+			d.mu.Unlock()
+			cols, rows := portfolioRows(cached.Snapshot, d.tr)
+			d.portfolio.set(cols, rows)
+			return
+		}
 		d.refreshPortfolio()
 	}
 }
@@ -958,6 +979,23 @@ func (d *desktop) showPortfolio() {
 func (d *desktop) showOperations() {
 	if !d.operationsVisited {
 		d.operationsVisited = true
+		now := time.Now()
+		from, to := dateText(d.from), dateText(d.to)
+		if from == "" && to == "" {
+			from, to = now.Format("2006-01-02"), now.Format("2006-01-02")
+		}
+		if cached, err := loadSnapshotCache(d.operationsCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.From[:min(10, len(cached.From))] == from && cached.To[:min(10, len(cached.To))] == to && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, now) {
+			d.mu.Lock()
+			if d.snapshot == nil {
+				d.snapshot = &model.Snapshot{}
+			}
+			d.snapshot.Operations, d.snapshot.OperationsPeriod = cached.Snapshot.Operations, cached.Snapshot.OperationsPeriod
+			snapshot := d.snapshot
+			d.mu.Unlock()
+			cols, rows := operationRows(snapshot, d.tr, *d.cfg.TimezoneOffset)
+			d.operations.set(cols, rows)
+			return
+		}
 		d.refreshOperations()
 	}
 }
@@ -965,7 +1003,10 @@ func (d *desktop) showOperations() {
 func (d *desktop) showInstruments() {
 	if !d.instrumentsVisited && d.loadInstruments != nil {
 		d.instrumentsVisited = true
-		d.loadInstruments(true)
+		d.mu.RLock()
+		fresh := d.cache != nil && d.cache.Fresh(time.Duration(d.cfg.CatalogTTLHours)*time.Hour, time.Now())
+		d.mu.RUnlock()
+		d.loadInstruments(!fresh)
 	}
 }
 func (d *desktop) exportAll() {
@@ -1434,13 +1475,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		currentFilter := filter()
 		if !force {
 			applyFilters()
-			if !needsInstrumentEnrichment(currentFilter) {
-				return
-			}
 			d.mu.RLock()
 			cache := d.cache
 			d.mu.RUnlock()
-			if cache == nil {
+			if cache == nil || !needsInstrumentEnrichment(currentFilter) || catalogEnriched(cache.Instruments) {
 				return
 			}
 			d.busy(instrumentEnrichmentKey(currentFilter), d.tr("loading"), func() error {
@@ -1483,12 +1521,12 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				return err
 			}
 			cache := &catalog.Cache{UpdatedAt: time.Now(), Instruments: items}
-			f := currentFilter
 			// Bond rate and coupon-month select boxes need enriched values before
 			// the user can make their first choice, so enrich the default bond view.
-			if needsInstrumentEnrichment(f) {
-				base := enrichmentFilter(f)
-				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
+			if len(cache.Instruments) > 0 {
+				// Build the persistent catalog in one transaction. Deferred enrichment
+				// would make rows and facets change after loading has been cleared.
+				enriched := client.EnrichCatalog(ctx, cache.Instruments, time.Now())
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item
@@ -1556,6 +1594,15 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 
 func needsInstrumentEnrichment(f catalog.Filter) bool {
 	return f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.MaturityFrom != nil || f.MaturityTo != nil || f.CouponMonth > 0 || f.Dividends != nil
+}
+
+func catalogEnriched(items []catalog.Instrument) bool {
+	for _, item := range items {
+		if !item.Enriched {
+			return false
+		}
+	}
+	return true
 }
 
 // enrichmentFilter keeps only fields known before the deferred API calls.
@@ -1739,6 +1786,8 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	retries.SetText(strconv.Itoa(d.cfg.Retries))
 	delay := widget.NewEntry()
 	delay.SetText(strconv.Itoa(d.cfg.RetryDelayMs))
+	ttl := widget.NewEntry()
+	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
 	tzOptions := make([]string, 0, 47)
@@ -1758,7 +1807,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	if *d.cfg.TimezoneOffset < 0 {
 		tz.SetSelected("UTC" + strconv.Itoa(*d.cfg.TimezoneOffset))
 	}
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -1768,6 +1817,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.TargetCurrency = targetCurrencyValue(target.Selected, d)
 		c.Retries = atoi(retries.Text)
 		c.RetryDelayMs = atoi(delay.Text)
+		c.CatalogTTLHours = atoi(ttl.Text)
 		c.Language = lang.Selected
 		if off, ok := tzLabels[tz.Selected]; ok {
 			c.TimezoneOffset = &off
