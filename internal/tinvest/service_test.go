@@ -3,9 +3,11 @@ package tinvest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,6 +166,53 @@ func TestCouponsHonorsRetryAfterThenSucceeds(t *testing.T) {
 	_, err := New(server.URL, "token", "test", 1, time.Millisecond, nil).Coupons(context.Background(), "FIGI", time.Now(), time.Now())
 	if err != nil || attempts != 2 || time.Since(start) < time.Second {
 		t.Fatalf("retry-after: attempts=%d err=%v elapsed=%s", attempts, err, time.Since(start))
+	}
+}
+
+func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
+	var mu sync.Mutex
+	var requests []time.Time
+	var rejected int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		now := time.Now()
+		requests = append(requests, now)
+		count := 0
+		for _, at := range requests {
+			if now.Sub(at) < time.Second {
+				count++
+			}
+		}
+		mu.Unlock()
+		if count > 7 {
+			mu.Lock()
+			rejected++
+			mu.Unlock()
+			http.Error(w, "quota", http.StatusTooManyRequests)
+			return
+		}
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if method == "GetBondCoupons" {
+			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
+			return
+		}
+		w.Write([]byte(`{"events":[]}`))
+	}))
+	defer server.Close()
+	items := make([]catalog.Instrument, 9)
+	for i := range items {
+		items[i] = catalog.Instrument{Type: "bond", UID: fmt.Sprintf("uid-%d", i), FIGI: fmt.Sprintf("figi-%d", i)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	got, err := New(server.URL, "token", "test", 3, time.Millisecond, nil).EnrichCatalog(ctx, items, time.Now())
+	if err != nil || len(got) != len(items) {
+		t.Fatalf("quota enrichment: items=%d err=%v", len(got), err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if rejected != 0 || len(requests) != 18 {
+		t.Fatalf("quota requests=%d rejected=%d", len(requests), rejected)
 	}
 }
 
