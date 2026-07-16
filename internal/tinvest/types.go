@@ -75,9 +75,9 @@ type bondResponse struct {
 }
 
 type couponsRequest struct {
-	InstrumentID string `json:"instrumentId"`
-	From         string `json:"from"`
-	To           string `json:"to"`
+	FIGI string `json:"figi"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 type couponEvent struct {

@@ -111,7 +111,7 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 				return
 			}
 			if out[i].Type == "bond" {
-				ev, e := c.Coupons(ctx, out[i].UID, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
+				ev, e := c.Coupons(ctx, out[i].FIGI, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
 				if e == nil {
 					if n, ok := nextCoupon(ev, now); ok {
 						out[i].NextCouponDate = n.CouponDate
@@ -346,8 +346,8 @@ func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error)
 }
 
 // Coupons returns coupon events for a bond within [from, to].
-func (c *Client) Coupons(ctx context.Context, instrumentID string, from, to time.Time) ([]couponEvent, error) {
-	req := couponsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
+func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) ([]couponEvent, error) {
+	req := couponsRequest{FIGI: figi, From: rfc3339(from), To: rfc3339(to)}
 	var resp couponsResponse
 	if err := c.call(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
 		return nil, err

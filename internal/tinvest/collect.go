@@ -393,7 +393,7 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 	}
 
 	// Narrow coupon window: 1 year back, 5 years forward (was 30 years).
-	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
+	events, err := c.Coupons(ctx, p.Figi, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
 	if err != nil {
 		c.log("Не удалось получить купоны %s: %v", p.InstrumentUID, err)
 		return info
