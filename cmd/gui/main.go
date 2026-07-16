@@ -1298,10 +1298,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		}
 		items := catalog.Search(cache.Instruments, filter())
 		cols, rows := instrumentRows(items, d)
-		options := append([]string{d.tr("all")}, currencyOptions(cache, "")...)
 		d.instruments.set(cols, rows)
-		currency.Options = options
-		currency.Refresh()
 		setOptions := func(selectbox *widget.Select, values []string) {
 			selected := selectbox.Selected
 			selectbox.Options = append([]string{""}, values...)
@@ -1310,9 +1307,37 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			}
 			selectbox.Refresh()
 		}
-		values := func(field func(catalog.Instrument) string) []string {
+		facet := func(ignore string) []catalog.Instrument {
+			f := filter()
+			switch ignore {
+			case "type":
+				f.Type = ""
+			case "currency":
+				f.Currency = ""
+			case "exchange":
+				f.Exchange = ""
+			case "sector":
+				f.Sector = ""
+			case "risk":
+				f.Risk = ""
+			case "frequency":
+				f.Frequency = 0
+			case "coupon":
+				f.CouponType = ""
+			case "dividends":
+				f.Dividends = nil
+			case "from":
+				f.RateFrom = nil
+			case "to":
+				f.RateTo = nil
+			case "month":
+				f.CouponMonth = 0
+			}
+			return catalog.Search(cache.Instruments, f)
+		}
+		values := func(items []catalog.Instrument, field func(catalog.Instrument) string) []string {
 			set := map[string]bool{}
-			for _, item := range cache.Instruments {
+			for _, item := range items {
 				if value := field(item); value != "" {
 					set[value] = true
 				}
@@ -1324,9 +1349,35 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			sort.Strings(out)
 			return out
 		}
-		setOptions(exchange, values(func(item catalog.Instrument) string { return item.Exchange }))
-		setOptions(sector, values(func(item catalog.Instrument) string { return item.Sector }))
-		rates := values(func(item catalog.Instrument) string {
+		setOptions(typeSelect, append([]string{d.tr("all")}, values(facet("type"), func(item catalog.Instrument) string { return d.tr("type_" + item.Type) })...))
+		setOptions(currency, append([]string{d.tr("all")}, values(facet("currency"), func(item catalog.Instrument) string { return strings.ToUpper(item.Currency) })...))
+		setOptions(exchange, values(facet("exchange"), func(item catalog.Instrument) string { return item.Exchange }))
+		setOptions(sector, values(facet("sector"), func(item catalog.Instrument) string { return item.Sector }))
+		setOptions(risk, values(facet("risk"), func(item catalog.Instrument) string {
+			return d.tr("risk_" + strings.ToLower(strings.TrimPrefix(item.RiskLevel, "RISK_LEVEL_")))
+		}))
+		setOptions(frequency, values(facet("frequency"), func(item catalog.Instrument) string {
+			return d.tr(map[int]string{1: "annual", 2: "semiannual", 4: "quarterly", 12: "monthly"}[item.CouponFrequency])
+		}))
+		setOptions(couponType, values(facet("coupon"), func(item catalog.Instrument) string {
+			if item.FloatingCoupon {
+				return d.tr("floating")
+			}
+			return d.tr("fixed")
+		}))
+		setOptions(dividends, values(facet("dividends"), func(item catalog.Instrument) string {
+			if item.HasDividends {
+				return d.tr("yes")
+			}
+			return d.tr("no")
+		}))
+		setOptions(month, values(facet("month"), func(item catalog.Instrument) string {
+			if t, e := time.Parse("2006-01-02", item.NextCouponDate[:min(10, len(item.NextCouponDate))]); e == nil {
+				return d.tr(monthKeys[int(t.Month())-1])
+			}
+			return ""
+		}))
+		rates := values(facet("from"), func(item catalog.Instrument) string {
 			if item.CouponRatePct == nil {
 				return ""
 			}
@@ -1337,7 +1388,26 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			b, _ := strconv.ParseFloat(rates[j], 64)
 			return a < b
 		})
+		if rateTo.Selected != "" {
+			limit, _ := strconv.ParseFloat(rateTo.Selected, 64)
+			rates = slices.DeleteFunc(rates, func(v string) bool { x, _ := strconv.ParseFloat(v, 64); return x > limit })
+		}
 		setOptions(rateFrom, rates)
+		rates = values(facet("to"), func(item catalog.Instrument) string {
+			if item.CouponRatePct == nil {
+				return ""
+			}
+			return strconv.FormatFloat(*item.CouponRatePct, 'f', -1, 64)
+		})
+		sort.Slice(rates, func(i, j int) bool {
+			a, _ := strconv.ParseFloat(rates[i], 64)
+			b, _ := strconv.ParseFloat(rates[j], 64)
+			return a < b
+		})
+		if rateFrom.Selected != "" {
+			limit, _ := strconv.ParseFloat(rateFrom.Selected, 64)
+			rates = slices.DeleteFunc(rates, func(v string) bool { x, _ := strconv.ParseFloat(v, 64); return x < limit })
+		}
 		setOptions(rateTo, rates)
 		updated.SetText(d.tr("catalog_updated") + ": " + cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 	}
