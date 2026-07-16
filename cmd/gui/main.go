@@ -60,7 +60,11 @@ type desktop struct {
 	portfolioVisited, operationsVisited, instrumentsVisited bool
 	loadInstruments                                         func(bool)
 	resetInstrumentFilters                                  func()
+	refreshMu                                               sync.Mutex
+	refreshing                                              map[string]bool
 }
+
+const refreshTimeout = 30 * time.Second
 
 type grid struct {
 	mu                     sync.RWMutex
@@ -823,7 +827,20 @@ func (d *desktop) client() (*tinvest.Client, error) {
 	c.Sandbox = d.cfg.Sandbox()
 	return c, nil
 }
-func (d *desktop) busy(label string, fn func() error) {
+
+// busy coalesces repeated refresh clicks for one tab. Network work never runs
+// on the UI goroutine, and a completed attempt always releases its key.
+func (d *desktop) busy(key, label string, fn func() error) {
+	d.refreshMu.Lock()
+	if d.refreshing == nil {
+		d.refreshing = make(map[string]bool)
+	}
+	if d.refreshing[key] {
+		d.refreshMu.Unlock()
+		return
+	}
+	d.refreshing[key] = true
+	d.refreshMu.Unlock()
 	fyne.Do(func() { d.status.SetText(label) })
 	go func() {
 		e := fn()
@@ -833,16 +850,19 @@ func (d *desktop) busy(label string, fn func() error) {
 				dialog.ShowError(e, d.window)
 			}
 		})
+		d.refreshMu.Lock()
+		d.refreshing[key] = false
+		d.refreshMu.Unlock()
 	}()
 }
 func (d *desktop) refreshPortfolio() {
-	d.busy(d.tr("loading"), func() error {
+	d.busy("portfolio", d.tr("loading"), func() error {
 		now := time.Now()
 		c, e := d.client()
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 		snap, e := c.Collect(ctx, d.cfg.Mode, d.cfg.TargetCurrency, now, func(current, total int) {
 			fyne.Do(func() {
@@ -865,7 +885,7 @@ func (d *desktop) refreshPortfolio() {
 }
 
 func (d *desktop) refreshOperations() {
-	d.busy(d.tr("loading_ops"), func() error {
+	d.busy("operations", d.tr("loading_ops"), func() error {
 		now := time.Now()
 		win, err := period.Resolve(dateText(d.from), dateText(d.to), d.cfg.ReportsDir, now)
 		if err != nil {
@@ -875,7 +895,7 @@ func (d *desktop) refreshOperations() {
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 		operations, operationPeriod, err := client.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
 			fyne.Do(func() { d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total)) })
@@ -1038,7 +1058,7 @@ func formatTimeZone(utc string, offset int) string {
 func (d *desktop) showInstrumentCard(row []string) {
 	uid := fieldOf(row, "uid")
 	if uid != "" && fieldOf(row, "type") == "bond" {
-		d.busy(d.tr("loading"), func() error {
+		d.busy("instrument-card", d.tr("loading"), func() error {
 			if e := d.enrichOne(uid); e != nil {
 				return e
 			}
@@ -1182,9 +1202,9 @@ func (d *desktop) instrumentByUID(uid string) (catalog.Instrument, bool) {
 
 // enrichOne fetches the coupon/event details of a single instrument.
 func (d *desktop) enrichOne(uid string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
 	item, ok := d.instrumentByUID(uid)
+	d.mu.RUnlock()
 	if !ok || item.Enriched {
 		return nil
 	}
@@ -1192,10 +1212,14 @@ func (d *desktop) enrichOne(uid string) error {
 	if e != nil {
 		return e
 	}
-	enriched := client.EnrichCatalog(context.Background(), []catalog.Instrument{item}, time.Now())
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+	enriched := client.EnrichCatalog(ctx, []catalog.Instrument{item}, time.Now())
 	if len(enriched) == 0 {
 		return nil
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for i := range d.cache.Instruments {
 		if d.cache.Instruments[i].UID == uid {
 			d.cache.Instruments[i] = enriched[0]
@@ -1226,72 +1250,120 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	rateFrom, rateTo := widget.NewEntry(), widget.NewEntry()
 	rateFrom.SetPlaceHolder(d.tr("rate_from"))
 	rateTo.SetPlaceHolder(d.tr("rate_to"))
-	maturityFrom, maturityTo := widget.NewEntry(), widget.NewEntry()
-	maturityFrom.SetPlaceHolder("YYYY-MM-DD")
-	maturityTo.SetPlaceHolder("YYYY-MM-DD")
+	maturityFrom, maturityTo := widget.NewDateEntry(), widget.NewDateEntry()
 	monthNames := append([]string{""}, localizedMonthNames(d)...)
 	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
+	filter := func() catalog.Filter {
+		var dividendFilter *bool
+		if dividends.Selected != "" {
+			v := dividends.Selected == d.tr("yes")
+			dividendFilter = &v
+		}
+		return catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), MaturityFrom: catalog.Date(dateText(maturityFrom)), MaturityTo: catalog.Date(dateText(maturityTo)), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
+	}
+	applyFilters := func() {
+		d.mu.RLock()
+		cache := d.cache
+		d.mu.RUnlock()
+		if cache == nil {
+			return
+		}
+		items := catalog.Search(cache.Instruments, filter())
+		cols, rows := instrumentRows(items, d)
+		options := append([]string{d.tr("all")}, currencyOptions(cache, "")...)
+		d.instruments.set(cols, rows)
+		currency.Options = options
+		currency.Refresh()
+		updated.SetText(d.tr("catalog_updated") + ": " + cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
+	}
 	load := func(force bool) {
-		d.busy(d.tr("loading"), func() error {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			client, e := d.client()
-			if e != nil {
-				return e
+		currentFilter := filter()
+		if !force {
+			applyFilters()
+			if currentFilter.RateFrom == nil && currentFilter.RateTo == nil && currentFilter.CouponMonth == 0 && currentFilter.Dividends == nil {
+				return
 			}
-			if d.cache == nil && !force {
-				return fmt.Errorf("%s", d.tr("refresh_first"))
+			d.mu.RLock()
+			cache := d.cache
+			d.mu.RUnlock()
+			if cache == nil {
+				return
 			}
-			if force {
-				items, e := client.Catalog(context.Background(), time.Now())
-				if e != nil {
-					return e
+			d.busy("instruments", d.tr("loading"), func() error {
+				client, err := d.client()
+				if err != nil {
+					return err
 				}
-				d.cache = &catalog.Cache{UpdatedAt: time.Now(), Instruments: items}
-				if e = d.cache.Save(d.cachePath); e != nil {
-					return e
-				}
-			}
-			base := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d)}
-			candidates := catalog.Search(d.cache.Instruments, base)
-			needsDetails := rateFrom.Text != "" || rateTo.Text != "" || month.Selected != "" || dividends.Selected != ""
-			if needsDetails {
-				enriched := client.EnrichCatalog(context.Background(), candidates, time.Now())
+				base := currentFilter
+				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
+				ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+				defer cancel()
+				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item
 				}
-				for i, item := range d.cache.Instruments {
-					if update, ok := byUID[item.UID]; ok {
-						d.cache.Instruments[i] = update
+				d.mu.Lock()
+				for i := range d.cache.Instruments {
+					if item, ok := byUID[d.cache.Instruments[i].UID]; ok {
+						d.cache.Instruments[i] = item
 					}
 				}
-				if e := d.cache.Save(d.cachePath); e != nil {
-					return e
+				err = d.cache.Save(d.cachePath)
+				d.mu.Unlock()
+				if err == nil {
+					fyne.Do(applyFilters)
+				}
+				return err
+			})
+			return
+		}
+		d.busy("instruments", d.tr("loading"), func() error {
+			client, err := d.client()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+			defer cancel()
+			items, err := client.Catalog(ctx, time.Now())
+			if err != nil {
+				return err
+			}
+			cache := &catalog.Cache{UpdatedAt: time.Now(), Instruments: items}
+			f := currentFilter
+			if f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil {
+				base := f
+				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
+				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
+				byUID := make(map[string]catalog.Instrument, len(enriched))
+				for _, item := range enriched {
+					byUID[item.UID] = item
+				}
+				for i := range cache.Instruments {
+					if item, ok := byUID[cache.Instruments[i].UID]; ok {
+						cache.Instruments[i] = item
+					}
 				}
 			}
-			var dividendFilter *bool
-			if dividends.Selected != "" {
-				v := dividends.Selected == d.tr("yes")
-				dividendFilter = &v
+			if err := cache.Save(d.cachePath); err != nil {
+				return err
 			}
-			f := catalog.Filter{Type: typeAPI(typeSelect.Selected, d), Query: d.instruments.search.Text, Currency: currencyFilter(currency.Selected, d), Exchange: exchange.Text, Sector: sector.Text, Risk: riskAPI(risk.Selected, d), Frequency: frequencyAPI(frequency.Selected, d), CouponType: couponAPI(couponType.Selected, d), RateFrom: catalog.Float(rateFrom.Text), RateTo: catalog.Float(rateTo.Text), MaturityFrom: catalog.Date(maturityFrom.Text), MaturityTo: catalog.Date(maturityTo.Text), CouponMonth: monthIndex(month.Selected, d), Dividends: dividendFilter}
-			items := catalog.Search(d.cache.Instruments, f)
-			cols, rows := instrumentRows(items, d)
-			options := append([]string{d.tr("all")}, currencyOptions(d.cache, "")...)
-			fyne.Do(func() {
-				d.instruments.set(cols, rows)
-				currency.Options = options
-				currency.Refresh()
-				updated.SetText(d.tr("catalog_updated") + ": " + d.cache.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
-			})
+			d.mu.Lock()
+			d.cache = cache
+			d.mu.Unlock()
+			fyne.Do(applyFilters)
 			return nil
 		})
 	}
-	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo, maturityFrom, maturityTo} {
+	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo} {
+		e.OnChanged = func(string) { load(false) }
+	}
+	for _, e := range []*widget.Entry{exchange, sector, rateFrom, rateTo} {
 		e.OnSubmitted = func(string) { load(false) }
 	}
+	maturityFrom.OnChanged = func(*time.Time) { load(false) }
+	maturityTo.OnChanged = func(*time.Time) { load(false) }
 	for _, s := range []*widget.Select{typeSelect, currency, risk, frequency, couponType, dividends, month} {
 		s.OnChanged = func(string) { load(false) }
 	}
@@ -1307,8 +1379,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		dividends.SetSelected("")
 		rateFrom.SetText("")
 		rateTo.SetText("")
-		maturityFrom.SetText("")
-		maturityTo.SetText("")
+		maturityFrom.SetDate(nil)
+		maturityTo.SetDate(nil)
 		month.SetSelected("")
 		load(false)
 	}

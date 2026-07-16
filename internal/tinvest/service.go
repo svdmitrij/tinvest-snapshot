@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
@@ -14,19 +15,37 @@ import (
 // coupon/dividend enrichment is deferred until local filters narrow the set.
 func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrument, error) {
 	types := []struct{ method, kind string }{{"Shares", "share"}, {"Bonds", "bond"}, {"Etfs", "etf"}, {"Currencies", "currency"}, {"Futures", "future"}}
-	var out []catalog.Instrument
-	for _, typ := range types {
-		var resp instrumentsResponse
-		if err := c.call(ctx, "InstrumentsService", typ.method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
-			return nil, err
-		}
-		for _, v := range resp.Instruments {
-			x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate}
-			if v.Nominal.Currency != "" {
-				x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
+	parts := make([][]catalog.Instrument, len(types))
+	errs := make(chan error, len(types))
+	var wg sync.WaitGroup
+	for i, typ := range types {
+		wg.Add(1)
+		go func(i int, typ struct{ method, kind string }) {
+			defer wg.Done()
+			var resp instrumentsResponse
+			if err := c.call(ctx, "InstrumentsService", typ.method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
+				errs <- err
+				return
 			}
-			out = append(out, x)
-		}
+			items := make([]catalog.Instrument, 0, len(resp.Instruments))
+			for _, v := range resp.Instruments {
+				x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate}
+				if v.Nominal.Currency != "" {
+					x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
+				}
+				items = append(items, x)
+			}
+			parts[i] = items
+		}(i, typ)
+	}
+	wg.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		return nil, err
+	}
+	var out []catalog.Instrument
+	for _, items := range parts {
+		out = append(out, items...)
 	}
 	return out, nil
 }

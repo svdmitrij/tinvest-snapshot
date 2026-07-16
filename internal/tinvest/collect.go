@@ -31,16 +31,36 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 		TargetCurrency: targetCurrency,
 	}
 
-	grand := map[string]float64{}
 	accounts = activeInvestmentAccounts(accounts)
-	for i, a := range accounts {
-		if onProgress != nil {
-			onProgress(i+1, len(accounts))
-		}
-		acc, err := c.collectAccount(ctx, a, now)
-		if err != nil {
-			return nil, err
-		}
+	collected := make([]*model.Account, len(accounts))
+	errs := make(chan error, len(accounts))
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+	for i, account := range accounts {
+		wg.Add(1)
+		go func(i int, account apiAccount) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			acc, err := c.collectAccount(ctx, account, now)
+			if err != nil {
+				errs <- err
+				return
+			}
+			collected[i] = acc
+			if onProgress != nil {
+				onProgress(i+1, len(accounts))
+			}
+		}(i, account)
+	}
+	wg.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		return nil, err
+	}
+
+	grand := map[string]float64{}
+	for _, acc := range collected {
 		grand[acc.Total.Currency] += floatOf(acc.Total.Amount)
 		snap.Accounts = append(snap.Accounts, *acc)
 	}
