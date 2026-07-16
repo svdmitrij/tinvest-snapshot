@@ -1290,7 +1290,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if cache == nil {
 				return
 			}
-			d.busy("instruments", d.tr("loading"), func() error {
+			d.busy(instrumentEnrichmentKey(currentFilter), d.tr("loading"), func() error {
 				client, err := d.client()
 				if err != nil {
 					return err
@@ -1319,7 +1319,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			})
 			return
 		}
-		d.busy("instruments", d.tr("loading"), func() error {
+		d.busy("instruments-refresh", d.tr("loading"), func() error {
 			client, err := d.client()
 			if err != nil {
 				return err
@@ -1407,6 +1407,23 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	}
 	scaleBar := d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments)
 	return container.NewBorder(container.NewVBox(bar, updated, scaleBar), nil, nil, nil, d.instruments.root)
+}
+
+// instrumentEnrichmentKey only coalesces identical enrichment requests. A
+// later filter with a different candidate set must run, otherwise its rows can
+// be evaluated against incomplete reference data.
+func instrumentEnrichmentKey(f catalog.Filter) string {
+	date := func(value *time.Time) string {
+		if value == nil {
+			return ""
+		}
+		return value.Format("2006-01-02")
+	}
+	dividends := ""
+	if f.Dividends != nil {
+		dividends = strconv.FormatBool(*f.Dividends)
+	}
+	return strings.Join([]string{f.Type, f.Query, f.Currency, f.Exchange, f.Sector, f.Risk, f.CouponType, strconv.Itoa(f.Frequency), strconv.Itoa(f.CouponMonth), date(f.MaturityFrom), date(f.MaturityTo), dividends}, "\x00")
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
 

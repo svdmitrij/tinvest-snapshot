@@ -100,6 +100,18 @@ func TestCurrencyFilterTreatsAllAsNoFilter(t *testing.T) {
 	}
 }
 
+func TestInstrumentEnrichmentKeyDistinguishesCandidateSets(t *testing.T) {
+	withDividends := true
+	bonds := catalog.Filter{Type: "bond", Dividends: &withDividends}
+	all := catalog.Filter{Dividends: &withDividends}
+	if instrumentEnrichmentKey(bonds) == instrumentEnrichmentKey(all) {
+		t.Fatal("different candidate sets must not share an enrichment key")
+	}
+	if instrumentEnrichmentKey(bonds) != instrumentEnrichmentKey(bonds) {
+		t.Fatal("identical filter must retain a stable enrichment key")
+	}
+}
+
 func TestCurrencyOptionsCoverCatalogAndConfigured(t *testing.T) {
 	cache := &catalog.Cache{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}
 	options := currencyOptions(cache, "gel")
