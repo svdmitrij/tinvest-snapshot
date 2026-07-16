@@ -29,7 +29,7 @@ func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrume
 			}
 			items := make([]catalog.Instrument, 0, len(resp.Instruments))
 			for _, v := range resp.Instruments {
-				x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate, ContractualMaturityDate: v.MaturityDate}
+				x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate, ContractualMaturityDate: v.MaturityDate, NextCouponDate: v.NextCouponDate}
 				if v.Nominal.Currency != "" {
 					x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
 				}

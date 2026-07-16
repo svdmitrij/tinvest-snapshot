@@ -134,6 +134,7 @@ type apiInstrument struct {
 	AmortizationFlag      bool        `json:"amortizationFlag"`
 	Nominal               money.Money `json:"nominal"`
 	MaturityDate          string      `json:"maturityDate"`
+	NextCouponDate        string      `json:"nextCouponDate"`
 }
 type instrumentsResponse struct {
 	Instruments []apiInstrument `json:"instruments"`

@@ -34,6 +34,28 @@ func TestCatalogLoadsDirectoriesConcurrently(t *testing.T) {
 	}
 }
 
+func TestCatalogRetainsDirectoryNextCouponDate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if method == "Bonds" {
+			w.Write([]byte(`{"instruments":[{"uid":"bond","ticker":"BOND","nextCouponDate":"2026-09-01T00:00:00Z"}]}`))
+			return
+		}
+		w.Write([]byte(`{"instruments":[]}`))
+	}))
+	defer server.Close()
+	items, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).Catalog(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.UID == "bond" && item.NextCouponDate == "2026-09-01T00:00:00Z" {
+			return
+		}
+	}
+	t.Fatalf("directory next coupon date was lost: %#v", items)
+}
+
 func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {
 	price := lastPrice{Price: money.Quotation{Units: 123, Nano: 450000000}}
 	cases := []struct{ kind, currency, want string }{
