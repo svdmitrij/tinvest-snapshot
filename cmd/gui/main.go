@@ -1530,7 +1530,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if len(cache.Instruments) > 0 {
 				// Build the persistent catalog in one transaction. Deferred enrichment
 				// would make rows and facets change after loading has been cleared.
-				enriched, err := client.EnrichCatalog(ctx, cache.Instruments, time.Now())
+				// Coupons and bond events are required for the initial bond view.
+				// Dividend enrichment remains demand-driven by its own filter.
+				enriched, err := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, catalog.Filter{Type: "bond"}), time.Now())
 				if err != nil {
 					return err
 				}

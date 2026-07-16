@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,32 @@ type Client struct {
 	bondShortCache  map[string]*bond
 	bCoalesceMu     sync.Mutex
 	bCoalesce       map[string]chan struct{}
+	cooldownMu      sync.Mutex
+	cooldownUntil   time.Time
+}
+
+func (c *Client) enrichmentCall(ctx context.Context, service, method string, req, out any) error {
+	c.cooldownMu.Lock()
+	wait := time.Until(c.cooldownUntil)
+	c.cooldownMu.Unlock()
+	if wait > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	err := c.call(ctx, service, method, req, out)
+	var api *APIError
+	if errors.As(err, &api) && api.RetryAfter > 0 {
+		c.cooldownMu.Lock()
+		until := time.Now().Add(api.RetryAfter)
+		if until.After(c.cooldownUntil) {
+			c.cooldownUntil = until
+		}
+		c.cooldownMu.Unlock()
+	}
+	return err
 }
 
 // New builds a client. delay is the base linear backoff between attempts.

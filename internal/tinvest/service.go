@@ -368,7 +368,7 @@ func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error)
 func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) ([]couponEvent, error) {
 	req := couponsRequest{FIGI: figi, From: rfc3339(from), To: rfc3339(to)}
 	var resp couponsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
@@ -379,7 +379,7 @@ func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) (
 func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to time.Time) ([]bondEvent, error) {
 	req := bondEventsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
 	var resp bondEventsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
@@ -389,7 +389,7 @@ func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to t
 func (c *Client) Dividends(ctx context.Context, instrumentID string, from, to time.Time) ([]dividend, error) {
 	req := dividendsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
 	var resp dividendsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetDividends", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetDividends", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Dividends, nil
