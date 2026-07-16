@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -61,10 +62,11 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 
 // APIError describes a non-2xx response. It never contains the token.
 type APIError struct {
-	Status  int
-	Service string
-	Method  string
-	Body    string
+	Status     int
+	Service    string
+	Method     string
+	Body       string
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -84,10 +86,15 @@ func (c *Client) call(ctx context.Context, service, method string, req, out any)
 		lastErr = err
 		c.log("Ошибка при вызове %s/%s (попытка %d из %d): %v", service, method, attempt, attempts, err)
 		if attempt < attempts {
+			wait := c.delay * time.Duration(1<<(attempt-1))
+			if api, ok := err.(*APIError); ok && api.RetryAfter > wait {
+				wait = api.RetryAfter
+			}
+			wait += time.Duration(time.Now().UnixNano() % int64(max(c.delay/4, time.Millisecond)))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(c.delay * time.Duration(attempt)):
+			case <-time.After(wait):
 			}
 		}
 	}
@@ -120,7 +127,11 @@ func (c *Client) do(ctx context.Context, service, method string, req, out any) e
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{Status: resp.StatusCode, Service: service, Method: method, Body: string(respBody)}
+		retryAfter := time.Duration(0)
+		if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > 0 {
+			retryAfter = time.Duration(seconds) * time.Second
+		}
+		return &APIError{Status: resp.StatusCode, Service: service, Method: method, Body: string(respBody), RetryAfter: retryAfter}
 	}
 	if out == nil {
 		return nil

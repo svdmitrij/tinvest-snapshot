@@ -148,6 +148,25 @@ func TestEnrichCatalogRejectsPartialCouponFailure(t *testing.T) {
 	}
 }
 
+func TestCouponsHonorsRetryAfterThenSucceeds(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	start := time.Now()
+	_, err := New(server.URL, "token", "test", 1, time.Millisecond, nil).Coupons(context.Background(), "FIGI", time.Now(), time.Now())
+	if err != nil || attempts != 2 || time.Since(start) < time.Second {
+		t.Fatalf("retry-after: attempts=%d err=%v elapsed=%s", attempts, err, time.Since(start))
+	}
+}
+
 func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {
 	price := lastPrice{Price: money.Quotation{Units: 123, Nano: 450000000}}
 	cases := []struct{ kind, currency, want string }{
