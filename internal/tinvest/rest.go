@@ -14,6 +14,8 @@ import (
 
 const contractPrefix = "tinkoff.public.invest.api.contract.v1."
 
+const defaultEnrichmentInterval = 160 * time.Millisecond
+
 // Logf logs a diagnostic line. The token is never passed to it.
 type Logf func(format string, args ...any)
 
@@ -29,18 +31,19 @@ type Client struct {
 	delay   time.Duration
 	log     Logf
 	// Sandbox routes account/portfolio calls through SandboxService.
-	Sandbox         bool
-	instrCacheMu    sync.RWMutex
-	instrShortCache map[string]*instrumentShort
-	inCoalesceMu    sync.Mutex
-	inCoalesce      map[string]chan struct{}
-	bondCacheMu     sync.RWMutex
-	bondShortCache  map[string]*bond
-	bCoalesceMu     sync.Mutex
-	bCoalesce       map[string]chan struct{}
-	cooldownMu      sync.Mutex
-	cooldownUntil   time.Time
-	nextEnrichment  time.Time
+	Sandbox            bool
+	instrCacheMu       sync.RWMutex
+	instrShortCache    map[string]*instrumentShort
+	inCoalesceMu       sync.Mutex
+	inCoalesce         map[string]chan struct{}
+	bondCacheMu        sync.RWMutex
+	bondShortCache     map[string]*bond
+	bCoalesceMu        sync.Mutex
+	bCoalesce          map[string]chan struct{}
+	cooldownMu         sync.Mutex
+	cooldownUntil      time.Time
+	nextEnrichment     time.Time
+	enrichmentInterval time.Duration
 }
 
 func (c *Client) enrichmentCall(ctx context.Context, service, method string, req, out any) error {
@@ -79,18 +82,15 @@ func (c *Client) enrichmentCall(ctx context.Context, service, method string, req
 func (c *Client) waitEnrichmentCooldown(ctx context.Context) error {
 	c.cooldownMu.Lock()
 	now := time.Now()
-	start := time.Time{}
-	if c.cooldownUntil.After(now) {
-		start = c.cooldownUntil
-		if c.nextEnrichment.After(start) {
-			start = c.nextEnrichment
-		}
-		c.nextEnrichment = start.Add(150 * time.Millisecond)
+	start := c.cooldownUntil
+	if c.nextEnrichment.After(start) {
+		start = c.nextEnrichment
 	}
+	if start.Before(now) {
+		start = now
+	}
+	c.nextEnrichment = start.Add(c.enrichmentInterval)
 	c.cooldownMu.Unlock()
-	if start.IsZero() {
-		return nil
-	}
 	wait := time.Until(start)
 	if wait > 0 {
 		select {
@@ -117,17 +117,18 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 		log = func(string, ...any) {}
 	}
 	return &Client{
-		base:            base,
-		token:           token,
-		appName:         appName,
-		http:            &http.Client{Timeout: 30 * time.Second},
-		retries:         retries,
-		delay:           delay,
-		log:             log,
-		instrShortCache: map[string]*instrumentShort{},
-		inCoalesce:      map[string]chan struct{}{},
-		bondShortCache:  map[string]*bond{},
-		bCoalesce:       map[string]chan struct{}{},
+		base:               base,
+		token:              token,
+		appName:            appName,
+		http:               &http.Client{Timeout: 30 * time.Second},
+		retries:            retries,
+		delay:              delay,
+		log:                log,
+		instrShortCache:    map[string]*instrumentShort{},
+		inCoalesce:         map[string]chan struct{}{},
+		bondShortCache:     map[string]*bond{},
+		bCoalesce:          map[string]chan struct{}{},
+		enrichmentInterval: defaultEnrichmentInterval,
 	}
 }
 

@@ -215,7 +215,7 @@ func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if rejected == 0 || len(requests) < 60 {
+	if rejected != 0 || len(requests) != 60 {
 		t.Fatalf("quota requests=%d rejected=%d", len(requests), rejected)
 	}
 }
@@ -242,8 +242,6 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 			http.Error(w, "quota", http.StatusTooManyRequests)
 			return
 		}
-		// Keep the three workers below the compressed seven-request window.
-		time.Sleep(quotaWindow / 2)
 		if strings.HasSuffix(r.URL.Path, "/GetBondCoupons") {
 			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
 			return
@@ -257,7 +255,9 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), scaledTimeout)
 	defer cancel()
-	got, err := New(server.URL, "token", "test", 3, quotaWindow, nil).EnrichCatalog(ctx, items, time.Now())
+	client := New(server.URL, "token", "test", 3, quotaWindow, nil)
+	client.enrichmentInterval = defaultEnrichmentInterval / 20
+	got, err := client.EnrichCatalog(ctx, items, time.Now())
 	if err != nil || len(got) != len(items) {
 		t.Fatalf("full quota enrichment: items=%d err=%v", len(got), err)
 	}
@@ -265,50 +265,6 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 		if !item.Enriched {
 			t.Fatal("full quota enrichment returned a partial catalog")
 		}
-	}
-}
-
-func TestEnrichCatalogKeepsWorkerThroughputWithoutCooldown(t *testing.T) {
-	var mu sync.Mutex
-	inFlight, peak := 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		inFlight++
-		if inFlight > peak {
-			peak = inFlight
-		}
-		mu.Unlock()
-		defer func() {
-			mu.Lock()
-			inFlight--
-			mu.Unlock()
-		}()
-		time.Sleep(50 * time.Millisecond)
-		if strings.HasSuffix(r.URL.Path, "/GetBondCoupons") {
-			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
-			return
-		}
-		w.Write([]byte(`{"events":[]}`))
-	}))
-	defer server.Close()
-	items := make([]catalog.Instrument, 150)
-	for i := range items {
-		items[i] = catalog.Instrument{Type: "bond", UID: fmt.Sprintf("uid-%d", i), FIGI: fmt.Sprintf("figi-%d", i)}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	started := time.Now()
-	got, err := New(server.URL, "token", "test", 3, time.Millisecond, nil).EnrichCatalog(ctx, items, time.Now())
-	if err != nil || len(got) != len(items) {
-		t.Fatalf("throughput enrichment: items=%d err=%v", len(got), err)
-	}
-	if elapsed := time.Since(started); elapsed >= 30*time.Second {
-		t.Fatalf("throughput enrichment took %s", elapsed)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if peak < 2 {
-		t.Fatalf("peak parallel requests = %d, want at least 2", peak)
 	}
 }
 
