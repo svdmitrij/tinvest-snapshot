@@ -126,6 +126,18 @@ func TestBondFilterRequestsEnrichmentAfterReset(t *testing.T) {
 	}
 }
 
+func TestEnrichmentCandidatesIgnoreRawMaturityRange(t *testing.T) {
+	to := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	filter := catalog.Filter{Type: "bond", MaturityTo: &to}
+	items := []catalog.Instrument{{Type: "bond", Ticker: "RU000A102LF6", MaturityDate: "2030-12-13"}}
+	if got := catalog.Search(items, filter); len(got) != 0 {
+		t.Fatalf("raw maturity filter unexpectedly retained %#v", got)
+	}
+	if got := catalog.Search(items, enrichmentFilter(filter)); len(got) != 1 || got[0].Ticker != "RU000A102LF6" {
+		t.Fatalf("enrichment candidates = %#v, want the bond before effective maturity is calculated", got)
+	}
+}
+
 func TestCurrencyOptionsCoverCatalogAndConfigured(t *testing.T) {
 	cache := &catalog.Cache{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}
 	options := currencyOptions(cache, "gel")

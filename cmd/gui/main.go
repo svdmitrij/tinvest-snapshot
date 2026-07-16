@@ -1448,8 +1448,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				if err != nil {
 					return err
 				}
-				base := currentFilter
-				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
+				base := enrichmentFilter(currentFilter)
 				ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 				defer cancel()
 				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
@@ -1488,8 +1487,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			// Bond rate and coupon-month select boxes need enriched values before
 			// the user can make their first choice, so enrich the default bond view.
 			if needsInstrumentEnrichment(f) {
-				base := f
-				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
+				base := enrichmentFilter(f)
 				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
@@ -1558,6 +1556,16 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 
 func needsInstrumentEnrichment(f catalog.Filter) bool {
 	return f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil
+}
+
+// enrichmentFilter keeps only fields known before the deferred API calls.
+// Coupon rates, dividends, and effective maturity depend on enrichment, so
+// applying them beforehand can incorrectly exclude a matching instrument.
+func enrichmentFilter(f catalog.Filter) catalog.Filter {
+	f.RateFrom, f.RateTo = nil, nil
+	f.MaturityFrom, f.MaturityTo = nil, nil
+	f.Dividends, f.CouponMonth = nil, 0
+	return f
 }
 
 // instrumentEnrichmentKey only coalesces identical enrichment requests. A
