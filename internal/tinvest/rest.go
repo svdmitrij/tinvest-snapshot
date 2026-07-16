@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,18 +44,54 @@ type Client struct {
 }
 
 func (c *Client) enrichmentCall(ctx context.Context, service, method string, req, out any) error {
+	attempts := c.retries + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := c.waitEnrichmentCooldown(ctx); err != nil {
+			return err
+		}
+		err := c.do(ctx, service, method, req, out)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		c.log("Ошибка при вызове %s/%s (попытка %d из %d): %v", service, method, attempt, attempts, err)
+		if api, ok := err.(*APIError); ok && api.RetryAfter > 0 {
+			c.extendEnrichmentCooldown(api.RetryAfter)
+		}
+		if attempt == attempts {
+			break
+		}
+		wait := c.delay * time.Duration(1<<(attempt-1))
+		if api, ok := err.(*APIError); ok && api.RetryAfter > 0 {
+			wait = 0
+		}
+		wait += time.Duration(time.Now().UnixNano() % int64(max(c.delay/4, time.Millisecond)))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return fmt.Errorf("исчерпаны попытки (%d) для %s/%s: %w", attempts, service, method, lastErr)
+}
+
+func (c *Client) waitEnrichmentCooldown(ctx context.Context) error {
 	c.cooldownMu.Lock()
 	now := time.Now()
-	start := c.cooldownUntil
-	if c.nextEnrichment.After(start) {
-		start = c.nextEnrichment
+	start := time.Time{}
+	if c.cooldownUntil.After(now) {
+		start = c.cooldownUntil
+		if c.nextEnrichment.After(start) {
+			start = c.nextEnrichment
+		}
+		c.nextEnrichment = start.Add(150 * time.Millisecond)
 	}
-	if start.Before(now) {
-		start = now
-	}
-	c.nextEnrichment = start.Add(150 * time.Millisecond)
-	wait := time.Until(start)
 	c.cooldownMu.Unlock()
+	if start.IsZero() {
+		return nil
+	}
+	wait := time.Until(start)
 	if wait > 0 {
 		select {
 		case <-ctx.Done():
@@ -64,17 +99,16 @@ func (c *Client) enrichmentCall(ctx context.Context, service, method string, req
 		case <-time.After(wait):
 		}
 	}
-	err := c.call(ctx, service, method, req, out)
-	var api *APIError
-	if errors.As(err, &api) && api.RetryAfter > 0 {
-		c.cooldownMu.Lock()
-		until := time.Now().Add(api.RetryAfter)
-		if until.After(c.cooldownUntil) {
-			c.cooldownUntil, c.nextEnrichment = until, until
-		}
-		c.cooldownMu.Unlock()
+	return nil
+}
+
+func (c *Client) extendEnrichmentCooldown(delay time.Duration) {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	until := time.Now().Add(delay)
+	if until.After(c.cooldownUntil) {
+		c.cooldownUntil, c.nextEnrichment = until, until
 	}
-	return err
 }
 
 // New builds a client. delay is the base linear backoff between attempts.
