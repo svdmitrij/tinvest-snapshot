@@ -82,6 +82,55 @@ func TestEnrichCatalogGetsCouponsByFIGI(t *testing.T) {
 	}
 }
 
+func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if method == "GetBondCoupons" {
+			w.Write([]byte(`{"events":[]}`))
+			return
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{"GetBondEvents": "bond-uid", "GetDividends": "share-uid"}[method]
+		if request["instrumentId"] != want || request["figi"] != nil {
+			http.Error(w, "expected instrument UID", http.StatusBadRequest)
+			return
+		}
+		switch method {
+		case "GetBondEvents":
+			w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CALL","payDate":"2026-09-11T00:00:00Z"}]}`))
+		case "GetDividends":
+			w.Write([]byte(`{"dividends":[{"paymentDate":"2026-09-01T00:00:00Z"}]}`))
+		}
+	}))
+	defer server.Close()
+	items := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "bond-uid", FIGI: "BBG-BOND", MaturityDate: "2030-12-13"}, {Type: "share", UID: "share-uid", FIGI: "BBG-SHARE"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	if items[0].MaturityDate != "2026-09-11" || !items[1].HasDividends {
+		t.Fatalf("catalog contract result = %#v", items)
+	}
+}
+
+func TestPortfolioDividendsUseUIDInstrumentID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request["instrumentId"] != "share-uid" || request["figi"] != nil {
+			http.Error(w, "expected instrument UID", http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"dividends":[{"paymentDate":"2026-09-01T00:00:00Z","dividendNet":{"currency":"rub","units":"1","nano":0}}]}`))
+	}))
+	defer server.Close()
+	info := New(server.URL, "token", "test", 0, time.Millisecond, nil).enrichShare(context.Background(), portfolioPosition{InstrumentUID: "share-uid", Figi: "BBG-SHARE"}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	if info.NextPaymentDate != "2026-09-01" {
+		t.Fatalf("next payment = %q", info.NextPaymentDate)
+	}
+}
+
 func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {
 	price := lastPrice{Price: money.Quotation{Units: 123, Nano: 450000000}}
 	cases := []struct{ kind, currency, want string }{
