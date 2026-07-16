@@ -1213,7 +1213,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		typeOptions = append(typeOptions, d.tr("type_"+t))
 	}
 	typeSelect := widget.NewSelect(typeOptions, nil)
-	typeSelect.SetSelected(d.tr("all"))
+	typeSelect.SetSelected(d.tr("type_share"))
 	currency := widget.NewSelect(append([]string{d.tr("all")}, currencyOptions(d.cache, "")...), nil)
 	currency.SetSelected(d.tr("all"))
 	exchange, sector := widget.NewEntry(), widget.NewEntry()
@@ -1491,10 +1491,6 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	retries.SetText(strconv.Itoa(d.cfg.Retries))
 	delay := widget.NewEntry()
 	delay.SetText(strconv.Itoa(d.cfg.RetryDelayMs))
-	auto := widget.NewEntry()
-	auto.SetText(strconv.Itoa(d.cfg.AutoRefreshMinutes))
-	ttl := widget.NewEntry()
-	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
 	tzOptions := make([]string, 0, 47)
@@ -1514,7 +1510,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	if *d.cfg.TimezoneOffset < 0 {
 		tz.SetSelected("UTC" + strconv.Itoa(*d.cfg.TimezoneOffset))
 	}
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("auto_refresh"), auto), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -1524,8 +1520,6 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.TargetCurrency = targetCurrencyValue(target.Selected, d)
 		c.Retries = atoi(retries.Text)
 		c.RetryDelayMs = atoi(delay.Text)
-		c.AutoRefreshMinutes = atoi(auto.Text)
-		c.CatalogTTLHours = atoi(ttl.Text)
 		c.Language = lang.Selected
 		if off, ok := tzLabels[tz.Selected]; ok {
 			c.TimezoneOffset = &off
