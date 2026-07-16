@@ -1466,7 +1466,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			}
 			cache := &catalog.Cache{UpdatedAt: time.Now(), Instruments: items}
 			f := currentFilter
-			if f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil {
+			// Bond rate and coupon-month select boxes need enriched values before
+			// the user can make their first choice, so enrich the default bond view.
+			if f.Type == "bond" || f.RateFrom != nil || f.RateTo != nil || f.CouponMonth > 0 || f.Dividends != nil {
 				base := f
 				base.RateFrom, base.RateTo, base.Dividends, base.CouponMonth = nil, nil, nil, 0
 				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
