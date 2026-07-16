@@ -102,9 +102,10 @@ func formatLastPrice(item catalog.Instrument, price lastPrice) string {
 // EnrichCatalog fills coupon and dividend fields for a locally narrowed set.
 func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) ([]catalog.Instrument, error) {
 	out := append([]catalog.Instrument(nil), items...)
-	// The three enrichment endpoints share a restrictive API quota. One
-	// in-flight request prevents a fan-out of retries from extending a 429.
-	sem := make(chan struct{}, 1)
+	// The three enrichment endpoints share a restrictive API quota. A small
+	// bounded pool avoids a retry storm while completing a full catalog within
+	// the GUI's overall timeout under normal response latency.
+	sem := make(chan struct{}, 3)
 	done := make(chan struct{}, len(out))
 	errs := make(chan error, len(out))
 	for i := range out {
