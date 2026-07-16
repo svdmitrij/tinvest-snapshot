@@ -1415,7 +1415,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		currentFilter := filter()
 		if !force {
 			applyFilters()
-			if currentFilter.RateFrom == nil && currentFilter.RateTo == nil && currentFilter.CouponMonth == 0 && currentFilter.Dividends == nil {
+			if currentFilter.Type != "bond" && currentFilter.RateFrom == nil && currentFilter.RateTo == nil && currentFilter.CouponMonth == 0 && currentFilter.Dividends == nil {
 				return
 			}
 			d.mu.RLock()
