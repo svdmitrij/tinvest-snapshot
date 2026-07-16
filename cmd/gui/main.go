@@ -1287,7 +1287,10 @@ func (d *desktop) enrichOne(uid string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
-	enriched := client.EnrichCatalog(ctx, []catalog.Instrument{item}, time.Now())
+	enriched, err := client.EnrichCatalog(ctx, []catalog.Instrument{item}, time.Now())
+	if err != nil {
+		return err
+	}
 	if len(enriched) == 0 {
 		return nil
 	}
@@ -1487,7 +1490,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				base := enrichmentFilter(currentFilter)
 				ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 				defer cancel()
-				enriched := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
+				enriched, err := client.EnrichCatalog(ctx, catalog.Search(cache.Instruments, base), time.Now())
+				if err != nil {
+					return err
+				}
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item
@@ -1524,7 +1530,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if len(cache.Instruments) > 0 {
 				// Build the persistent catalog in one transaction. Deferred enrichment
 				// would make rows and facets change after loading has been cleared.
-				enriched := client.EnrichCatalog(ctx, cache.Instruments, time.Now())
+				enriched, err := client.EnrichCatalog(ctx, cache.Instruments, time.Now())
+				if err != nil {
+					return err
+				}
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item

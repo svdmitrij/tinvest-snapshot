@@ -76,7 +76,10 @@ func TestEnrichCatalogGetsCouponsByFIGI(t *testing.T) {
 	}))
 	defer server.Close()
 	client := New(server.URL, "token", "test", 0, time.Millisecond, nil)
-	items := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "BBG00REAL", CouponFrequency: 4, Nominal: "1000 rub"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	items, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "BBG00REAL", CouponFrequency: 4, Nominal: "1000 rub"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := items[0].NextCouponDate; got != "2026-09-01T00:00:00Z" {
 		t.Fatalf("next coupon = %q", got)
 	}
@@ -106,7 +109,10 @@ func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	items := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "bond-uid", FIGI: "BBG-BOND", MaturityDate: "2030-12-13"}, {Type: "share", UID: "share-uid", FIGI: "BBG-SHARE"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	items, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "bond-uid", FIGI: "BBG-BOND", MaturityDate: "2030-12-13"}, {Type: "share", UID: "share-uid", FIGI: "BBG-SHARE"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if items[0].MaturityDate != "2026-09-11" || !items[1].HasDividends {
 		t.Fatalf("catalog contract result = %#v", items)
 	}
@@ -128,6 +134,17 @@ func TestPortfolioDividendsUseUIDInstrumentID(t *testing.T) {
 	info := New(server.URL, "token", "test", 0, time.Millisecond, nil).enrichShare(context.Background(), portfolioPosition{InstrumentUID: "share-uid", Figi: "BBG-SHARE"}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
 	if info.NextPaymentDate != "2026-09-01" {
 		t.Fatalf("next payment = %q", info.NextPaymentDate)
+	}
+}
+
+func TestEnrichCatalogRejectsPartialCouponFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	_, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "GetBondCoupons uid=uid figi=RU000A102LF6") {
+		t.Fatalf("partial coupon failure was accepted: %v", err)
 	}
 }
 

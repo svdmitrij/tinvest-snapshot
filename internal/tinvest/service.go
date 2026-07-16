@@ -2,6 +2,7 @@ package tinvest
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,10 +100,11 @@ func formatLastPrice(item catalog.Instrument, price lastPrice) string {
 }
 
 // EnrichCatalog fills coupon and dividend fields for a locally narrowed set.
-func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) []catalog.Instrument {
+func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) ([]catalog.Instrument, error) {
 	out := append([]catalog.Instrument(nil), items...)
 	sem := make(chan struct{}, 6)
 	done := make(chan struct{}, len(out))
+	errs := make(chan error, len(out))
 	for i := range out {
 		go func(i int) {
 			sem <- struct{}{}
@@ -112,15 +114,17 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 			}
 			if out[i].Type == "bond" {
 				ev, e := c.Coupons(ctx, out[i].FIGI, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
-				if e == nil {
-					if n, ok := nextCoupon(ev, now); ok {
-						out[i].NextCouponDate = n.CouponDate
-						if out[i].CouponFrequency > 0 {
-							nom := parseAmount(out[i].Nominal)
-							if nom > 0 {
-								r := n.PayOneBond.Float() * float64(out[i].CouponFrequency) / nom * 100
-								out[i].CouponRatePct = &r
-							}
+				if e != nil {
+					errs <- fmt.Errorf("GetBondCoupons uid=%s figi=%s: %w", out[i].UID, out[i].FIGI, e)
+					return
+				}
+				if n, ok := nextCoupon(ev, now); ok {
+					out[i].NextCouponDate = n.CouponDate
+					if out[i].CouponFrequency > 0 {
+						nom := parseAmount(out[i].Nominal)
+						if nom > 0 {
+							r := n.PayOneBond.Float() * float64(out[i].CouponFrequency) / nom * 100
+							out[i].CouponRatePct = &r
 						}
 					}
 				}
@@ -133,10 +137,17 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 						contractual = out[i].MaturityDate
 					}
 					out[i].MaturityDate = effectiveMaturity(contractual, out[i].OfferDates, now)
+				} else {
+					errs <- fmt.Errorf("GetBondEvents uid=%s: %w", out[i].UID, e)
+					return
 				}
 			} else if out[i].Type == "share" {
 				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
-				out[i].HasDividends = e == nil && len(d) > 0
+				if e != nil {
+					errs <- fmt.Errorf("GetDividends uid=%s: %w", out[i].UID, e)
+					return
+				}
+				out[i].HasDividends = len(d) > 0
 			}
 			out[i].Enriched = true
 		}(i)
@@ -144,7 +155,12 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 	for i := 0; i < len(out); i++ {
 		<-done
 	}
-	return out
+	select {
+	case err := <-errs:
+		return nil, err
+	default:
+		return out, nil
+	}
 }
 
 func effectiveMaturity(contractual string, offers []string, now time.Time) string {
