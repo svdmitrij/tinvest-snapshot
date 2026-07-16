@@ -43,6 +43,7 @@ type Instrument struct {
 
 type Cache struct {
 	UpdatedAt   time.Time    `json:"updated_at"`
+	Mode        string       `json:"mode,omitempty"`
 	Instruments []Instrument `json:"instruments"`
 }
 

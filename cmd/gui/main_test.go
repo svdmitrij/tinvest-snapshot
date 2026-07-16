@@ -153,6 +153,19 @@ func TestSnapshotCachesKeepPortfolioAndOperationRange(t *testing.T) {
 	}
 }
 
+func TestOperationCacheRangeUsesLocalCalendarDate(t *testing.T) {
+	loc := time.FixedZone("UTC+4", 4*60*60)
+	now := time.Date(2026, 7, 16, 1, 0, 0, 0, loc)
+	from, to := operationCacheRange("", "", now)
+	if from != "2026-07-16" || to != "2026-07-16" {
+		t.Fatalf("default range = %q..%q", from, to)
+	}
+	from, to = operationCacheRange("2026-07-01", "2026-07-16", now)
+	if from != "2026-07-01" || to != "2026-07-16" {
+		t.Fatalf("explicit range = %q..%q", from, to)
+	}
+}
+
 func TestCatalogEnrichedRequiresEveryInstrument(t *testing.T) {
 	if catalogEnriched([]catalog.Instrument{{Enriched: true}, {Enriched: false}}) {
 		t.Fatal("partial catalog must not be published as complete")

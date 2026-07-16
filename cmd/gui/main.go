@@ -951,7 +951,8 @@ func (d *desktop) refreshOperations() {
 		d.snapshot.Operations, d.snapshot.OperationsPeriod = operations, &operationPeriod
 		snapshot := d.snapshot
 		d.mu.Unlock()
-		if err := saveSnapshotCache(d.operationsCachePath, snapshotCache{UpdatedAt: now, Mode: d.cfg.Mode, From: operationPeriod.From, To: operationPeriod.To, Snapshot: &model.Snapshot{Operations: operations, OperationsPeriod: &operationPeriod}}); err != nil {
+		fromKey, toKey := operationCacheRange(fromText, toText, now)
+		if err := saveSnapshotCache(d.operationsCachePath, snapshotCache{UpdatedAt: now, Mode: d.cfg.Mode, From: fromKey, To: toKey, Snapshot: &model.Snapshot{Operations: operations, OperationsPeriod: &operationPeriod}}); err != nil {
 			return err
 		}
 		cols, rows := operationRows(snapshot, d.tr, *d.cfg.TimezoneOffset)
@@ -980,11 +981,8 @@ func (d *desktop) showOperations() {
 	if !d.operationsVisited {
 		d.operationsVisited = true
 		now := time.Now()
-		from, to := dateText(d.from), dateText(d.to)
-		if from == "" && to == "" {
-			from, to = now.Format("2006-01-02"), now.Format("2006-01-02")
-		}
-		if cached, err := loadSnapshotCache(d.operationsCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.From[:min(10, len(cached.From))] == from && cached.To[:min(10, len(cached.To))] == to && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, now) {
+		from, to := operationCacheRange(dateText(d.from), dateText(d.to), now)
+		if cached, err := loadSnapshotCache(d.operationsCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.From == from && cached.To == to && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, now) {
 			d.mu.Lock()
 			if d.snapshot == nil {
 				d.snapshot = &model.Snapshot{}
@@ -1004,7 +1002,7 @@ func (d *desktop) showInstruments() {
 	if !d.instrumentsVisited && d.loadInstruments != nil {
 		d.instrumentsVisited = true
 		d.mu.RLock()
-		fresh := d.cache != nil && d.cache.Fresh(time.Duration(d.cfg.CatalogTTLHours)*time.Hour, time.Now())
+		fresh := d.cache != nil && d.cache.Mode == d.cfg.Mode && d.cache.Fresh(time.Duration(d.cfg.CatalogTTLHours)*time.Hour, time.Now())
 		d.mu.RUnlock()
 		d.loadInstruments(!fresh)
 	}
@@ -1520,7 +1518,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if err != nil {
 				return err
 			}
-			cache := &catalog.Cache{UpdatedAt: time.Now(), Instruments: items}
+			cache := &catalog.Cache{UpdatedAt: time.Now(), Mode: d.cfg.Mode, Instruments: items}
 			// Bond rate and coupon-month select boxes need enriched values before
 			// the user can make their first choice, so enrich the default bond view.
 			if len(cache.Instruments) > 0 {

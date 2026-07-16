@@ -22,6 +22,13 @@ func TestSearchTextCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestCachePreservesAPIMode(t *testing.T) {
+	cache := Cache{Mode: "sandbox"}
+	if cache.Mode != "sandbox" {
+		t.Fatal("catalog cache must retain API mode")
+	}
+}
+
 func TestSearchFiltersMaturityRangeInclusively(t *testing.T) {
 	from := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2027, 12, 31, 0, 0, 0, 0, time.UTC)

@@ -59,3 +59,14 @@ func saveSnapshotCache(path string, cache snapshotCache) error {
 func cacheFresh(updated time.Time, ttlHours int, now time.Time) bool {
 	return !updated.IsZero() && now.Sub(updated) < time.Duration(ttlHours)*time.Hour
 }
+
+// operationCacheRange is a user-facing calendar key. It deliberately avoids
+// RFC3339 conversion: local midnight in a positive offset is the previous UTC
+// date and must still match the same selected calendar day after restart.
+func operationCacheRange(from, to string, now time.Time) (string, string) {
+	day := now.Format("2006-01-02")
+	if from == "" && to == "" {
+		return day, day
+	}
+	return from, to
+}
