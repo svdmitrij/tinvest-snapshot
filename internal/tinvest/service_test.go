@@ -3,6 +3,7 @@ package tinvest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -258,6 +259,98 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 	if len(requests) != 400 {
 		t.Fatalf("requests = %d, want one GetBondEvents request per bond", len(requests))
 	}
+}
+
+// TestEnrichCatalogMeasuredLiveBondVolume models the catalog measured on the
+// live API on 2026-07-17: 1558 INSTRUMENT_STATUS_BASE bonds, one GetBondEvents
+// each, under the documented 200-requests/60s InstrumentsService window. Time
+// is compressed 40x (window 75 ms holds 10 requests, pacing 320 ms -> 8 ms).
+// At the current pacing the full volume needs ~499s: a 300-second budget must
+// fail without publishing a partial catalog, a 600-second budget must complete
+// all 1558 bonds without a single 429.
+func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
+	const (
+		liveBonds   = 1558
+		quotaWindow = 75 * time.Millisecond
+		scaledIn300 = 300 * time.Second / 40
+		scaledIn600 = 600 * time.Second / 40
+	)
+	newQuotaServer := func() (*httptest.Server, func() (requests, rejected int)) {
+		var mu sync.Mutex
+		var arrivals []time.Time
+		var total, over429 int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			now := time.Now()
+			arrivals = append(arrivals, now)
+			total++
+			count := 0
+			for _, at := range arrivals {
+				if now.Sub(at) < quotaWindow {
+					count++
+				}
+			}
+			over := count > 10
+			if over {
+				over429++
+			}
+			mu.Unlock()
+			if over {
+				http.Error(w, "quota", http.StatusTooManyRequests)
+				return
+			}
+			w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CPN","payDate":"2030-01-01T00:00:00Z"}]}`))
+		}))
+		return server, func() (int, int) {
+			mu.Lock()
+			defer mu.Unlock()
+			return total, over429
+		}
+	}
+	items := make([]catalog.Instrument, liveBonds)
+	for i := range items {
+		items[i] = catalog.Instrument{Type: "bond", UID: fmt.Sprintf("uid-%d", i), FIGI: fmt.Sprintf("figi-%d", i)}
+	}
+
+	t.Run("default 300s budget cannot cover the live volume", func(t *testing.T) {
+		server, _ := newQuotaServer()
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), scaledIn300)
+		defer cancel()
+		client := New(server.URL, "token", "test", 3, quotaWindow, nil)
+		client.enrichmentInterval = defaultEnrichmentInterval / 40
+		got, err := client.EnrichCatalog(ctx, items, time.Now())
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected deadline exceeded, got %v", err)
+		}
+		if got != nil {
+			t.Fatal("timed-out enrichment must not return a partial catalog")
+		}
+	})
+
+	t.Run("600s budget completes the live volume without 429", func(t *testing.T) {
+		server, counts := newQuotaServer()
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), scaledIn600)
+		defer cancel()
+		client := New(server.URL, "token", "test", 3, quotaWindow, nil)
+		client.enrichmentInterval = defaultEnrichmentInterval / 40
+		start := time.Now()
+		got, err := client.EnrichCatalog(ctx, items, time.Now())
+		elapsed := time.Since(start)
+		if err != nil || len(got) != liveBonds {
+			t.Fatalf("live-volume enrichment: items=%d err=%v", len(got), err)
+		}
+		for _, item := range got {
+			if !item.Enriched {
+				t.Fatal("live-volume enrichment returned a partial catalog")
+			}
+		}
+		if requests, rejected := counts(); requests != liveBonds || rejected != 0 {
+			t.Fatalf("requests=%d rejected=%d, want exactly %d and 0", requests, rejected, liveBonds)
+		}
+		t.Logf("scaled elapsed=%v (~%v real)", elapsed.Round(time.Millisecond), (elapsed * 40).Round(time.Second))
+	})
 }
 
 func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {

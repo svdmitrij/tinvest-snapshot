@@ -8,6 +8,7 @@
   "target_currency": "",
   "endpoint": "",
   "app_name": "tinvest-snapshot",
+  "instrument_load_timeout_seconds": 300,
   "font_scale_portfolio": 100,
   "font_scale_operations": 100,
   "font_scale_instruments": 100

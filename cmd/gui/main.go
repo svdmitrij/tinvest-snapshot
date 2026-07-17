@@ -65,10 +65,13 @@ type desktop struct {
 	refreshing                                                     map[string]bool
 }
 
-const (
-	refreshTimeout           = 30 * time.Second
-	instrumentRefreshTimeout = 180 * time.Second
-)
+const refreshTimeout = 30 * time.Second
+
+// instrumentRefreshTimeout returns the user-configured bound for the full
+// network instrument load (FR51/FR52); other network paths keep refreshTimeout.
+func (d *desktop) instrumentRefreshTimeout() time.Duration {
+	return time.Duration(d.cfg.InstrumentLoadTimeoutSeconds) * time.Second
+}
 
 type grid struct {
 	mu                     sync.RWMutex
@@ -1521,7 +1524,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), instrumentRefreshTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 			defer cancel()
 			items, err := client.Catalog(ctx, time.Now())
 			if err != nil {
@@ -1800,6 +1803,8 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	delay.SetText(strconv.Itoa(d.cfg.RetryDelayMs))
 	ttl := widget.NewEntry()
 	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
+	loadTimeout := widget.NewEntry()
+	loadTimeout.SetText(strconv.Itoa(d.cfg.InstrumentLoadTimeoutSeconds))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
 	tzOptions := make([]string, 0, 47)
@@ -1819,7 +1824,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	if *d.cfg.TimezoneOffset < 0 {
 		tz.SetSelected("UTC" + strconv.Itoa(*d.cfg.TimezoneOffset))
 	}
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("instrument_load_timeout"), loadTimeout), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -1830,6 +1835,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.Retries = atoi(retries.Text)
 		c.RetryDelayMs = atoi(delay.Text)
 		c.CatalogTTLHours = atoi(ttl.Text)
+		c.InstrumentLoadTimeoutSeconds = atoi(loadTimeout.Text)
 		c.Language = lang.Selected
 		if off, ok := tzLabels[tz.Selected]; ok {
 			c.TimezoneOffset = &off

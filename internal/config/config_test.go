@@ -99,6 +99,28 @@ func TestCatalogTTLNormalizesOnlyNonPositiveValues(t *testing.T) {
 	}
 }
 
+func TestInstrumentLoadTimeoutNormalizesOnlyNonPositiveValues(t *testing.T) {
+	p := writeTemp(t, `{"token":"x"}`)
+	c, err := Load(p)
+	if err != nil || c.InstrumentLoadTimeoutSeconds != 300 {
+		t.Fatalf("absent timeout: got %+v, err %v", c, err)
+	}
+	for _, tc := range []struct{ raw, want int }{{0, 300}, {-1, 300}, {1, 1}, {600, 600}} {
+		p := writeTemp(t, `{"token":"x","instrument_load_timeout_seconds":`+strconv.Itoa(tc.raw)+`}`)
+		c, err := Load(p)
+		if err != nil || c.InstrumentLoadTimeoutSeconds != tc.want {
+			t.Fatalf("timeout %d: got %+v, err %v", tc.raw, c, err)
+		}
+	}
+}
+
+func TestInstrumentLoadTimeoutRejectsIncompatibleJSONType(t *testing.T) {
+	p := writeTemp(t, `{"token":"x","instrument_load_timeout_seconds":"fast"}`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected config error for a non-integer JSON value")
+	}
+}
+
 func TestSaveRestoresIndependentScales(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	c := &Config{Mode: ModeSandbox, Token: "x", FontScalePortfolio: 80, FontScaleOperations: 120, FontScaleInstruments: 150}

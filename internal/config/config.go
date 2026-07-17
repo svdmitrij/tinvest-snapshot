@@ -41,7 +41,10 @@ type Config struct {
 	// GUI-only preferences are ignored by the CLI and keep the file backwards compatible.
 	AutoRefreshMinutes int    `json:"auto_refresh_minutes,omitempty"`
 	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
-	Language           string `json:"language,omitempty"`
+	// InstrumentLoadTimeoutSeconds bounds the full network instrument load
+	// (catalog, mandatory enrichment and result assembly), in whole seconds.
+	InstrumentLoadTimeoutSeconds int    `json:"instrument_load_timeout_seconds,omitempty"`
+	Language                     string `json:"language,omitempty"`
 	// TimezoneOffset is nil when the field is absent from the config (defaults
 	// to +4 in that case).  An explicit UTC+0 is stored as a pointer to 0,
 	// distinct from absent.
@@ -87,6 +90,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CatalogTTLHours <= 0 {
 		c.CatalogTTLHours = 24
+	}
+	if c.InstrumentLoadTimeoutSeconds <= 0 {
+		c.InstrumentLoadTimeoutSeconds = 300
 	}
 	if c.Language == "" {
 		c.Language = "ru"

@@ -141,12 +141,54 @@ func TestCacheFreshHonorsTTLBoundary(t *testing.T) {
 	}
 }
 
-func TestInstrumentRefreshHasDedicatedTimeout(t *testing.T) {
-	if instrumentRefreshTimeout != 180*time.Second {
-		t.Fatalf("instrument refresh timeout = %s, want 180s", instrumentRefreshTimeout)
-	}
+func TestInstrumentRefreshTimeoutComesFromConfig(t *testing.T) {
 	if refreshTimeout != 30*time.Second {
 		t.Fatalf("ordinary refresh timeout = %s, want 30s", refreshTimeout)
+	}
+	absent := &config.Config{Mode: "sandbox", TokenEnv: "T"}
+	if err := absent.Save(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	d := &desktop{cfg: absent}
+	if got := d.instrumentRefreshTimeout(); got != 300*time.Second {
+		t.Fatalf("default instrument load timeout = %s, want 300s", got)
+	}
+	d.cfg.InstrumentLoadTimeoutSeconds = 600
+	if got := d.instrumentRefreshTimeout(); got != 600*time.Second {
+		t.Fatalf("configured instrument load timeout = %s, want 600s", got)
+	}
+}
+
+func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, input := range []string{"", "abc", "0", "-1"} {
+		c := config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: atoi(input)}
+		if err := c.Save(path); err != nil {
+			t.Fatalf("save %q: %v", input, err)
+		}
+		if c.InstrumentLoadTimeoutSeconds != 300 {
+			t.Fatalf("input %q normalized to %d, want 300", input, c.InstrumentLoadTimeoutSeconds)
+		}
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("load after %q: %v", input, err)
+		}
+		if loaded.InstrumentLoadTimeoutSeconds != 300 {
+			t.Fatalf("reloaded %q value = %d, want 300", input, loaded.InstrumentLoadTimeoutSeconds)
+		}
+	}
+	for _, keep := range []int{1, 600} {
+		c := config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: keep}
+		if err := c.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.InstrumentLoadTimeoutSeconds != keep {
+			t.Fatalf("positive value %d changed to %d", keep, loaded.InstrumentLoadTimeoutSeconds)
+		}
 	}
 }
 
