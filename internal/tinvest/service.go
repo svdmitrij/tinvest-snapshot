@@ -116,24 +116,19 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 				return
 			}
 			if out[i].Type == "bond" {
-				ev, e := c.Coupons(ctx, out[i].FIGI, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
-				if e != nil {
-					errs <- fmt.Errorf("GetBondCoupons uid=%s figi=%s: %w", out[i].UID, out[i].FIGI, e)
-					return
-				}
-				if n, ok := nextCoupon(ev, now); ok {
-					out[i].NextCouponDate = n.CouponDate
-					if out[i].CouponFrequency > 0 {
-						nom := parseAmount(out[i].Nominal)
-						if nom > 0 {
-							r := n.PayOneBond.Float() * float64(out[i].CouponFrequency) / nom * 100
-							out[i].CouponRatePct = &r
-						}
-					}
-				}
 				// A bond may amortize over decades: ask for the whole life span,
 				// not the default nearest-period window.
 				if events, e := c.BondEvents(ctx, out[i].UID, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
+					if n, ok := nextBondCoupon(events, now); ok {
+						out[i].NextCouponDate = eventDay(n)
+						if out[i].CouponFrequency > 0 {
+							nom := parseAmount(out[i].Nominal)
+							if nom > 0 {
+								r := n.PayOneBond.Float() * float64(out[i].CouponFrequency) / nom * 100
+								out[i].CouponRatePct = &r
+							}
+						}
+					}
 					out[i].AmortizationDates, out[i].OfferDates = redemptionSchedule(events)
 					contractual := out[i].ContractualMaturityDate
 					if contractual == "" {
@@ -181,6 +176,24 @@ func effectiveMaturity(contractual string, offers []string, now time.Time) strin
 		return contractual
 	}
 	return nearest.Format("2006-01-02")
+}
+
+func nextBondCoupon(events []bondEvent, now time.Time) (bondEvent, bool) {
+	var nearest bondEvent
+	var nearestDate time.Time
+	for _, event := range events {
+		if event.EventType != "EVENT_TYPE_CPN" {
+			continue
+		}
+		date, err := time.Parse("2006-01-02", eventDay(event))
+		if err != nil || !date.After(now.UTC()) {
+			continue
+		}
+		if nearestDate.IsZero() || date.Before(nearestDate) {
+			nearest, nearestDate = event, date
+		}
+	}
+	return nearest, !nearestDate.IsZero()
 }
 
 // redemptionSchedule splits bond events into the amortization schedule and the

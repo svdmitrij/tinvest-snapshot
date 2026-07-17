@@ -14,7 +14,7 @@ import (
 
 const contractPrefix = "tinkoff.public.invest.api.contract.v1."
 
-const defaultEnrichmentInterval = 160 * time.Millisecond
+const defaultEnrichmentInterval = 320 * time.Millisecond
 
 // Logf logs a diagnostic line. The token is never passed to it.
 type Logf func(format string, args ...any)

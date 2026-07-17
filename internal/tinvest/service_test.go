@@ -59,19 +59,19 @@ func TestCatalogRetainsDirectoryNextCouponDate(t *testing.T) {
 	t.Fatalf("directory next coupon date was lost: %#v", items)
 }
 
-func TestEnrichCatalogGetsCouponsByFIGI(t *testing.T) {
+func TestEnrichCatalogGetsCouponFromBondEvents(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		if method == "GetBondCoupons" {
+		if method == "GetBondEvents" {
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatal(err)
 			}
-			if request["figi"] != "BBG00REAL" || request["instrumentId"] != nil {
-				http.Error(w, "expected figi", http.StatusBadRequest)
+			if request["instrumentId"] != "uid" || request["figi"] != nil {
+				http.Error(w, "expected instrument UID", http.StatusBadRequest)
 				return
 			}
-			w.Write([]byte(`{"events":[{"couponDate":"2026-09-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0}}]}`))
+			w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CPN","payDate":"2026-09-01T00:00:00Z","payOneBond":{"currency":"rub","units":"20","nano":0}}]}`))
 			return
 		}
 		w.Write([]byte(`{"events":[]}`))
@@ -82,7 +82,7 @@ func TestEnrichCatalogGetsCouponsByFIGI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := items[0].NextCouponDate; got != "2026-09-01T00:00:00Z" {
+	if got := items[0].NextCouponDate; got != "2026-09-01" {
 		t.Fatalf("next coupon = %q", got)
 	}
 }
@@ -90,10 +90,6 @@ func TestEnrichCatalogGetsCouponsByFIGI(t *testing.T) {
 func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		if method == "GetBondCoupons" {
-			w.Write([]byte(`{"events":[]}`))
-			return
-		}
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
@@ -105,7 +101,7 @@ func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
 		}
 		switch method {
 		case "GetBondEvents":
-			w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CALL","payDate":"2026-09-11T00:00:00Z"}]}`))
+			w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CPN","payDate":"2026-09-01T00:00:00Z"},{"eventType":"EVENT_TYPE_CALL","payDate":"2026-09-11T00:00:00Z"}]}`))
 		case "GetDividends":
 			w.Write([]byte(`{"dividends":[{"paymentDate":"2026-09-01T00:00:00Z"}]}`))
 		}
@@ -115,7 +111,7 @@ func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if items[0].MaturityDate != "2026-09-11" || !items[1].HasDividends {
+	if items[0].MaturityDate != "2026-09-11" || items[0].NextCouponDate != "2026-09-01" || !items[1].HasDividends {
 		t.Fatalf("catalog contract result = %#v", items)
 	}
 }
@@ -145,7 +141,7 @@ func TestEnrichCatalogRejectsPartialCouponFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	got, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
-	if err == nil || !strings.Contains(err.Error(), "GetBondCoupons uid=uid figi=RU000A102LF6") {
+	if err == nil || !strings.Contains(err.Error(), "GetBondEvents uid=uid") {
 		t.Fatalf("partial coupon failure was accepted: %v", err)
 	}
 	if got != nil {
@@ -172,7 +168,7 @@ func TestCouponsHonorsRetryAfterThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
+func TestEnrichCatalogPacesBelowInstrumentsServiceQuota(t *testing.T) {
 	var mu sync.Mutex
 	var requests []time.Time
 	var rejected int
@@ -182,12 +178,12 @@ func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
 		requests = append(requests, now)
 		count := 0
 		for _, at := range requests {
-			if now.Sub(at) < time.Second {
+			if now.Sub(at) < 3*time.Second {
 				count++
 			}
 		}
 		mu.Unlock()
-		if count > 7 {
+		if count > 10 {
 			mu.Lock()
 			rejected++
 			mu.Unlock()
@@ -195,12 +191,7 @@ func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
 			http.Error(w, "quota", http.StatusTooManyRequests)
 			return
 		}
-		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		if method == "GetBondCoupons" {
-			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
-			return
-		}
-		w.Write([]byte(`{"events":[]}`))
+		w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CPN","payDate":"2030-01-01T00:00:00Z"}]}`))
 	}))
 	defer server.Close()
 	items := make([]catalog.Instrument, 30)
@@ -215,15 +206,15 @@ func TestEnrichCatalogPacesConcurrentWorkersBelowGlobalQuota(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if rejected != 0 || len(requests) != 60 {
+	if rejected != 0 || len(requests) != 30 {
 		t.Fatalf("quota requests=%d rejected=%d", len(requests), rejected)
 	}
 }
 
 func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
-	// The test compresses the one-second seven-request quota window by 20x:
-	// 50 ms models one API second, so nine seconds model the 180-second GUI limit.
-	const quotaWindow = 50 * time.Millisecond
+	// The test compresses the documented 200-request/minute InstrumentsService
+	// limit by 20x: 150 ms models a three-second, ten-request rolling window.
+	const quotaWindow = 150 * time.Millisecond
 	const scaledTimeout = 9 * time.Second
 	var mu sync.Mutex
 	var requests []time.Time
@@ -238,15 +229,11 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 			}
 		}
 		mu.Unlock()
-		if count > 7 {
+		if count > 10 {
 			http.Error(w, "quota", http.StatusTooManyRequests)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/GetBondCoupons") {
-			w.Write([]byte(`{"events":[{"couponDate":"2030-01-01T00:00:00Z"}]}`))
-			return
-		}
-		w.Write([]byte(`{"events":[]}`))
+		w.Write([]byte(`{"events":[{"eventType":"EVENT_TYPE_CPN","payDate":"2030-01-01T00:00:00Z"}]}`))
 	}))
 	defer server.Close()
 	items := make([]catalog.Instrument, 400)
@@ -265,6 +252,11 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 		if !item.Enriched {
 			t.Fatal("full quota enrichment returned a partial catalog")
 		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 400 {
+		t.Fatalf("requests = %d, want one GetBondEvents request per bond", len(requests))
 	}
 }
 
