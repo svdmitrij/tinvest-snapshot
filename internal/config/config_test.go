@@ -99,17 +99,32 @@ func TestCatalogTTLNormalizesOnlyNonPositiveValues(t *testing.T) {
 	}
 }
 
-func TestInstrumentLoadTimeoutNormalizesOnlyNonPositiveValues(t *testing.T) {
+func TestInstrumentLoadTimeoutRange(t *testing.T) {
 	p := writeTemp(t, `{"token":"x"}`)
 	c, err := Load(p)
-	if err != nil || c.InstrumentLoadTimeoutSeconds != 300 {
+	if err != nil || c.InstrumentLoadTimeoutSeconds != 600 {
 		t.Fatalf("absent timeout: got %+v, err %v", c, err)
 	}
-	for _, tc := range []struct{ raw, want int }{{0, 300}, {-1, 300}, {1, 1}, {600, 600}} {
+	for _, tc := range []struct{ raw, want int }{{0, 600}, {-1, 600}, {29, 600}, {30, 30}, {600, 600}, {3600, 3600}, {3601, 600}} {
 		p := writeTemp(t, `{"token":"x","instrument_load_timeout_seconds":`+strconv.Itoa(tc.raw)+`}`)
 		c, err := Load(p)
 		if err != nil || c.InstrumentLoadTimeoutSeconds != tc.want {
-			t.Fatalf("timeout %d: got %+v, err %v", tc.raw, c, err)
+			t.Fatalf("timeout %d: got %d want %d, err %v", tc.raw, c.InstrumentLoadTimeoutSeconds, tc.want, err)
+		}
+	}
+}
+
+func TestDividendLoadTimeoutRange(t *testing.T) {
+	p := writeTemp(t, `{"token":"x"}`)
+	c, err := Load(p)
+	if err != nil || c.DividendLoadTimeoutSeconds != 900 {
+		t.Fatalf("absent timeout: got %+v, err %v", c, err)
+	}
+	for _, tc := range []struct{ raw, want int }{{0, 900}, {-1, 900}, {29, 900}, {30, 30}, {900, 900}, {3600, 3600}, {3601, 900}} {
+		p := writeTemp(t, `{"token":"x","dividend_load_timeout_seconds":`+strconv.Itoa(tc.raw)+`}`)
+		c, err := Load(p)
+		if err != nil || c.DividendLoadTimeoutSeconds != tc.want {
+			t.Fatalf("dividend timeout %d: got %d want %d, err %v", tc.raw, c.DividendLoadTimeoutSeconds, tc.want, err)
 		}
 	}
 }

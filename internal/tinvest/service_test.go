@@ -26,12 +26,22 @@ func TestCatalogLoadsDirectoriesConcurrently(t *testing.T) {
 
 	client := New(server.URL, "token", "test", 0, time.Millisecond, nil)
 	started := time.Now()
-	items, err := client.Catalog(context.Background(), time.Now())
-	if err != nil {
-		t.Fatal(err)
+	var all []catalog.Instrument
+	var mu sync.Mutex
+	var firstErr error
+	client.Catalog(context.Background(), time.Now(), func(typ string, items []catalog.Instrument, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		all = append(all, items...)
+	})
+	if firstErr != nil {
+		t.Fatal(firstErr)
 	}
-	if len(items) != 5 {
-		t.Fatalf("instruments = %d, want 5", len(items))
+	if len(all) != 5 {
+		t.Fatalf("instruments = %d, want 5", len(all))
 	}
 	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
 		t.Fatalf("Catalog took %s; directories must load concurrently", elapsed)
@@ -48,16 +58,24 @@ func TestCatalogRetainsDirectoryNextCouponDate(t *testing.T) {
 		w.Write([]byte(`{"instruments":[]}`))
 	}))
 	defer server.Close()
-	items, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).Catalog(context.Background(), time.Now())
-	if err != nil {
-		t.Fatal(err)
+	client := New(server.URL, "token", "test", 0, time.Millisecond, nil)
+	var all []catalog.Instrument
+	var firstErr error
+	client.Catalog(context.Background(), time.Now(), func(typ string, items []catalog.Instrument, err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		all = append(all, items...)
+	})
+	if firstErr != nil {
+		t.Fatal(firstErr)
 	}
-	for _, item := range items {
+	for _, item := range all {
 		if item.UID == "bond" && item.NextCouponDate == "2026-09-01T00:00:00Z" {
 			return
 		}
 	}
-	t.Fatalf("directory next coupon date was lost: %#v", items)
+	t.Fatalf("directory next coupon date was lost: %#v", all)
 }
 
 func TestEnrichCatalogGetsCouponFromBondEvents(t *testing.T) {

@@ -12,46 +12,52 @@ import (
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 )
 
-// Catalog downloads the five read-only instrument directories. Expensive
-// coupon/dividend enrichment is deferred until local filters narrow the set.
-func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrument, error) {
-	types := []struct{ method, kind string }{{"Shares", "share"}, {"Bonds", "bond"}, {"Etfs", "etf"}, {"Currencies", "currency"}, {"Futures", "future"}}
-	parts := make([][]catalog.Instrument, len(types))
-	errs := make(chan error, len(types))
+var catalogMethods = map[string]string{"share": "Shares", "bond": "Bonds", "etf": "Etfs", "currency": "Currencies", "future": "Futures"}
+
+var allCatalogTypes = []string{"share", "bond", "etf", "currency", "future"}
+
+// Catalog downloads all five instrument directories, calling receive for each
+// type independently.  Callers apply atomic per-type merging with independent
+// timeouts.
+func (c *Client) Catalog(ctx context.Context, now time.Time, receive func(typ string, items []catalog.Instrument, err error)) {
 	var wg sync.WaitGroup
-	for i, typ := range types {
+	for _, typ := range allCatalogTypes {
 		wg.Add(1)
-		go func(i int, typ struct{ method, kind string }) {
+		go func(typ string) {
 			defer wg.Done()
-			var resp instrumentsResponse
-			if err := c.call(ctx, "InstrumentsService", typ.method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
-				errs <- err
-				return
-			}
-			items := make([]catalog.Instrument, 0, len(resp.Instruments))
-			for _, v := range resp.Instruments {
-				x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate, ContractualMaturityDate: v.MaturityDate, NextCouponDate: v.NextCouponDate}
-				if v.Nominal.Currency != "" {
-					x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
-				}
-				items = append(items, x)
-			}
-			parts[i] = items
-		}(i, typ)
+			items, err := c.catalogKind(ctx, typ)
+			receive(typ, items, err)
+		}(typ)
 	}
 	wg.Wait()
-	close(errs)
-	if err := <-errs; err != nil {
+}
+
+// CatalogKind loads a single instrument type (catalog + last prices).
+func (c *Client) CatalogKind(ctx context.Context, kind string) ([]catalog.Instrument, error) {
+	return c.catalogKind(ctx, kind)
+}
+
+func (c *Client) catalogKind(ctx context.Context, typ string) ([]catalog.Instrument, error) {
+	method, ok := catalogMethods[typ]
+	if !ok {
+		return nil, fmt.Errorf("unknown instrument type %q", typ)
+	}
+	var resp instrumentsResponse
+	if err := c.call(ctx, "InstrumentsService", method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
 		return nil, err
 	}
-	var out []catalog.Instrument
-	for _, items := range parts {
-		out = append(out, items...)
+	items := make([]catalog.Instrument, 0, len(resp.Instruments))
+	for _, v := range resp.Instruments {
+		x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate, ContractualMaturityDate: v.MaturityDate, NextCouponDate: v.NextCouponDate}
+		if v.Nominal.Currency != "" {
+			x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
+		}
+		items = append(items, x)
 	}
-	if err := c.applyLastPrices(ctx, out); err != nil {
+	if err := c.applyLastPrices(ctx, items); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return items, nil
 }
 
 func (c *Client) applyLastPrices(ctx context.Context, items []catalog.Instrument) error {

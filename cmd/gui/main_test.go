@@ -150,8 +150,8 @@ func TestInstrumentRefreshTimeoutComesFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &desktop{cfg: absent}
-	if got := d.instrumentRefreshTimeout(); got != 300*time.Second {
-		t.Fatalf("default instrument load timeout = %s, want 300s", got)
+	if got := d.instrumentRefreshTimeout(); got != 600*time.Second {
+		t.Fatalf("default instrument load timeout = %s, want 600s", got)
 	}
 	d.cfg.InstrumentLoadTimeoutSeconds = 600
 	if got := d.instrumentRefreshTimeout(); got != 600*time.Second {
@@ -166,18 +166,18 @@ func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 		if err := c.Save(path); err != nil {
 			t.Fatalf("save %q: %v", input, err)
 		}
-		if c.InstrumentLoadTimeoutSeconds != 300 {
-			t.Fatalf("input %q normalized to %d, want 300", input, c.InstrumentLoadTimeoutSeconds)
+		if c.InstrumentLoadTimeoutSeconds != 600 {
+			t.Fatalf("input %q normalized to %d, want 600", input, c.InstrumentLoadTimeoutSeconds)
 		}
 		loaded, err := config.Load(path)
 		if err != nil {
 			t.Fatalf("load after %q: %v", input, err)
 		}
-		if loaded.InstrumentLoadTimeoutSeconds != 300 {
-			t.Fatalf("reloaded %q value = %d, want 300", input, loaded.InstrumentLoadTimeoutSeconds)
+		if loaded.InstrumentLoadTimeoutSeconds != 600 {
+			t.Fatalf("reloaded %q value = %d, want 600", input, loaded.InstrumentLoadTimeoutSeconds)
 		}
 	}
-	for _, keep := range []int{1, 600} {
+	for _, keep := range []int{30, 600} {
 		c := config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: keep}
 		if err := c.Save(path); err != nil {
 			t.Fatal(err)
@@ -196,7 +196,7 @@ func TestFreshInstrumentCacheUsesImmediateLocalPath(t *testing.T) {
 	called := make(chan bool, 1)
 	d := &desktop{
 		cfg:   &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
-		cache: &catalog.Cache{Mode: "sandbox", UpdatedAt: time.Now(), Instruments: []catalog.Instrument{{UID: "bond"}}},
+		scache: &catalog.SegmentedCache{Mode: "sandbox", Bond: &catalog.Segment{UpdatedAt: time.Now(), Instruments: []catalog.Instrument{{UID: "bond"}}}},
 		loadInstruments: func(force bool) {
 			called <- force
 		},
@@ -263,8 +263,8 @@ func TestEnrichmentCandidatesIgnoreRawMaturityRange(t *testing.T) {
 }
 
 func TestCurrencyOptionsCoverCatalogAndConfigured(t *testing.T) {
-	cache := &catalog.Cache{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}
-	options := currencyOptions(cache, "gel")
+	scache := &catalog.SegmentedCache{Share: &catalog.Segment{Instruments: []catalog.Instrument{{Currency: "sek"}, {Currency: "usd"}, {Currency: ""}}}}
+	options := currencyOptions(scache, "gel")
 	for _, want := range []string{"RUB", "USD", "SEK", "GEL"} {
 		if !slices.Contains(options, want) {
 			t.Errorf("currencyOptions missing %s: %v", want, options)

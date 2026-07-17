@@ -41,10 +41,14 @@ type Config struct {
 	// GUI-only preferences are ignored by the CLI and keep the file backwards compatible.
 	AutoRefreshMinutes int    `json:"auto_refresh_minutes,omitempty"`
 	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
-	// InstrumentLoadTimeoutSeconds bounds the full network instrument load
+	// InstrumentLoadTimeoutSeconds bounds the full network bond load
 	// (catalog, mandatory enrichment and result assembly), in whole seconds.
-	InstrumentLoadTimeoutSeconds int    `json:"instrument_load_timeout_seconds,omitempty"`
-	Language                     string `json:"language,omitempty"`
+	// Default 600, range 30–3600.
+	InstrumentLoadTimeoutSeconds int `json:"instrument_load_timeout_seconds,omitempty"`
+	// DividendLoadTimeoutSeconds bounds the demand-driven dividend enrichment
+	// for shares, in whole seconds. Default 900, range 30–3600.
+	DividendLoadTimeoutSeconds int    `json:"dividend_load_timeout_seconds,omitempty"`
+	Language                   string `json:"language,omitempty"`
 	// TimezoneOffset is nil when the field is absent from the config (defaults
 	// to +4 in that case).  An explicit UTC+0 is stored as a pointer to 0,
 	// distinct from absent.
@@ -91,8 +95,12 @@ func (c *Config) applyDefaults() {
 	if c.CatalogTTLHours <= 0 {
 		c.CatalogTTLHours = 24
 	}
-	if c.InstrumentLoadTimeoutSeconds <= 0 {
-		c.InstrumentLoadTimeoutSeconds = 300
+	// Clamp both timeouts to [30, 3600]; 0, negative, and out-of-range → default.
+	if c.InstrumentLoadTimeoutSeconds < 30 || c.InstrumentLoadTimeoutSeconds > 3600 {
+		c.InstrumentLoadTimeoutSeconds = 600
+	}
+	if c.DividendLoadTimeoutSeconds < 30 || c.DividendLoadTimeoutSeconds > 3600 {
+		c.DividendLoadTimeoutSeconds = 900
 	}
 	if c.Language == "" {
 		c.Language = "ru"
