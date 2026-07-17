@@ -2,40 +2,118 @@ package tinvest
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 )
 
-// Catalog downloads the five read-only instrument directories. Expensive
-// coupon/dividend enrichment is deferred until local filters narrow the set.
-func (c *Client) Catalog(ctx context.Context, now time.Time) ([]catalog.Instrument, error) {
-	types := []struct{ method, kind string }{{"Shares", "share"}, {"Bonds", "bond"}, {"Etfs", "etf"}, {"Currencies", "currency"}, {"Futures", "future"}}
-	var out []catalog.Instrument
-	for _, typ := range types {
-		var resp instrumentsResponse
-		if err := c.call(ctx, "InstrumentsService", typ.method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
-			return nil, err
+var catalogMethods = map[string]string{"share": "Shares", "bond": "Bonds", "etf": "Etfs", "currency": "Currencies", "future": "Futures"}
+
+var allCatalogTypes = []string{"share", "bond", "etf", "currency", "future"}
+
+// Catalog downloads all five instrument directories, calling receive for each
+// type independently.  Callers apply atomic per-type merging with independent
+// timeouts.
+func (c *Client) Catalog(ctx context.Context, now time.Time, receive func(typ string, items []catalog.Instrument, err error)) {
+	var wg sync.WaitGroup
+	for _, typ := range allCatalogTypes {
+		wg.Add(1)
+		go func(typ string) {
+			defer wg.Done()
+			items, err := c.catalogKind(ctx, typ)
+			receive(typ, items, err)
+		}(typ)
+	}
+	wg.Wait()
+}
+
+// CatalogKind loads a single instrument type (catalog + last prices).
+func (c *Client) CatalogKind(ctx context.Context, kind string) ([]catalog.Instrument, error) {
+	return c.catalogKind(ctx, kind)
+}
+
+func (c *Client) catalogKind(ctx context.Context, typ string) ([]catalog.Instrument, error) {
+	method, ok := catalogMethods[typ]
+	if !ok {
+		return nil, fmt.Errorf("unknown instrument type %q", typ)
+	}
+	var resp instrumentsResponse
+	if err := c.call(ctx, "InstrumentsService", method, map[string]string{"instrumentStatus": "INSTRUMENT_STATUS_BASE"}, &resp); err != nil {
+		return nil, err
+	}
+	items := make([]catalog.Instrument, 0, len(resp.Instruments))
+	for _, v := range resp.Instruments {
+		x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate, ContractualMaturityDate: v.MaturityDate, NextCouponDate: v.NextCouponDate}
+		if v.Nominal.Currency != "" {
+			x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
 		}
-		for _, v := range resp.Instruments {
-			x := catalog.Instrument{UID: v.UID, FIGI: v.Figi, Type: typ.kind, Ticker: v.Ticker, Name: v.Name, ISIN: v.ISIN, Currency: v.Currency, Exchange: v.Exchange, Sector: v.Sector, RiskLevel: v.RiskLevel, CouponFrequency: v.CouponQuantityPerYear, FloatingCoupon: v.FloatingCouponFlag, Amortized: v.AmortizationFlag, MaturityDate: v.MaturityDate}
-			if v.Nominal.Currency != "" {
-				x.Nominal = v.Nominal.String() + " " + v.Nominal.Currency
+		items = append(items, x)
+	}
+	if err := c.applyLastPrices(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (c *Client) applyLastPrices(ctx context.Context, items []catalog.Instrument) error {
+	const batchSize = 300
+	for start := 0; start < len(items); start += batchSize {
+		end := min(start+batchSize, len(items))
+		uids := make([]string, 0, end-start)
+		for _, item := range items[start:end] {
+			if item.UID != "" {
+				uids = append(uids, item.UID)
 			}
-			out = append(out, x)
+		}
+		if len(uids) == 0 {
+			continue
+		}
+		prices, err := c.LastPrices(ctx, uids)
+		if err != nil {
+			return err
+		}
+		byUID := make(map[string]lastPrice, len(prices))
+		for _, price := range prices {
+			byUID[price.InstrumentUID] = price
+		}
+		for i := start; i < end; i++ {
+			if price, ok := byUID[items[i].UID]; ok {
+				items[i].LastPrice = formatLastPrice(items[i], price)
+			}
 		}
 	}
-	return out, nil
+	return nil
+}
+
+func formatLastPrice(item catalog.Instrument, price lastPrice) string {
+	value := price.Price.String()
+	switch item.Type {
+	case "bond":
+		return value + "%"
+	case "future":
+		return value + " points"
+	default:
+		if item.Currency != "" {
+			return value + " " + strings.ToUpper(item.Currency)
+		}
+		return value
+	}
 }
 
 // EnrichCatalog fills coupon and dividend fields for a locally narrowed set.
-func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) []catalog.Instrument {
+func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) ([]catalog.Instrument, error) {
 	out := append([]catalog.Instrument(nil), items...)
-	sem := make(chan struct{}, 6)
+	// The three enrichment endpoints share a restrictive API quota. A small
+	// bounded pool avoids a retry storm while completing a full catalog within
+	// the GUI's overall timeout under normal response latency.
+	sem := make(chan struct{}, 3)
 	done := make(chan struct{}, len(out))
+	errs := make(chan error, len(out))
 	for i := range out {
 		go func(i int) {
 			sem <- struct{}{}
@@ -44,10 +122,11 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 				return
 			}
 			if out[i].Type == "bond" {
-				ev, e := c.Coupons(ctx, out[i].UID, now.AddDate(-1, 0, 0), now.AddDate(2, 0, 0))
-				if e == nil {
-					if n, ok := nextCoupon(ev, now); ok {
-						out[i].NextCouponDate = n.CouponDate
+				// A bond may amortize over decades: ask for the whole life span,
+				// not the default nearest-period window.
+				if events, e := c.BondEvents(ctx, out[i].UID, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
+					if n, ok := nextBondCoupon(events, now); ok {
+						out[i].NextCouponDate = eventDay(n)
 						if out[i].CouponFrequency > 0 {
 							nom := parseAmount(out[i].Nominal)
 							if nom > 0 {
@@ -56,15 +135,23 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 							}
 						}
 					}
-				}
-				// A bond may amortize over decades: ask for the whole life span,
-				// not the default nearest-period window.
-				if events, e := c.BondEvents(ctx, out[i].UID, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
 					out[i].AmortizationDates, out[i].OfferDates = redemptionSchedule(events)
+					contractual := out[i].ContractualMaturityDate
+					if contractual == "" {
+						contractual = out[i].MaturityDate
+					}
+					out[i].MaturityDate = effectiveMaturity(contractual, out[i].OfferDates, now)
+				} else {
+					errs <- fmt.Errorf("GetBondEvents uid=%s: %w", out[i].UID, e)
+					return
 				}
 			} else if out[i].Type == "share" {
 				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
-				out[i].HasDividends = e == nil && len(d) > 0
+				if e != nil {
+					errs <- fmt.Errorf("GetDividends uid=%s: %w", out[i].UID, e)
+					return
+				}
+				out[i].HasDividends = len(d) > 0
 			}
 			out[i].Enriched = true
 		}(i)
@@ -72,7 +159,47 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 	for i := 0; i < len(out); i++ {
 		<-done
 	}
-	return out
+	select {
+	case err := <-errs:
+		return nil, err
+	default:
+		return out, nil
+	}
+}
+
+func effectiveMaturity(contractual string, offers []string, now time.Time) string {
+	var nearest time.Time
+	for _, raw := range offers {
+		date, err := time.Parse("2006-01-02", raw)
+		if err != nil || !date.After(now.UTC()) {
+			continue
+		}
+		if nearest.IsZero() || date.Before(nearest) {
+			nearest = date
+		}
+	}
+	if nearest.IsZero() {
+		return contractual
+	}
+	return nearest.Format("2006-01-02")
+}
+
+func nextBondCoupon(events []bondEvent, now time.Time) (bondEvent, bool) {
+	var nearest bondEvent
+	var nearestDate time.Time
+	for _, event := range events {
+		if event.EventType != "EVENT_TYPE_CPN" {
+			continue
+		}
+		date, err := time.Parse("2006-01-02", eventDay(event))
+		if err != nil || !date.After(now.UTC()) {
+			continue
+		}
+		if nearestDate.IsZero() || date.Before(nearestDate) {
+			nearest, nearestDate = event, date
+		}
+	}
+	return nearest, !nearestDate.IsZero()
 }
 
 // redemptionSchedule splits bond events into the amortization schedule and the
@@ -257,10 +384,10 @@ func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error)
 }
 
 // Coupons returns coupon events for a bond within [from, to].
-func (c *Client) Coupons(ctx context.Context, instrumentID string, from, to time.Time) ([]couponEvent, error) {
-	req := couponsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
+func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) ([]couponEvent, error) {
+	req := couponsRequest{FIGI: figi, From: rfc3339(from), To: rfc3339(to)}
 	var resp couponsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
@@ -271,7 +398,7 @@ func (c *Client) Coupons(ctx context.Context, instrumentID string, from, to time
 func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to time.Time) ([]bondEvent, error) {
 	req := bondEventsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
 	var resp bondEventsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
@@ -281,7 +408,7 @@ func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to t
 func (c *Client) Dividends(ctx context.Context, instrumentID string, from, to time.Time) ([]dividend, error) {
 	req := dividendsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
 	var resp dividendsResponse
-	if err := c.call(ctx, "InstrumentsService", "GetDividends", req, &resp); err != nil {
+	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetDividends", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Dividends, nil

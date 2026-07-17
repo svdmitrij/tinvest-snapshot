@@ -147,3 +147,15 @@ func TestCollectSandbox(t *testing.T) {
 		t.Errorf("ytm = %v, want in (8.42, 30] for a discounted bond", ytm)
 	}
 }
+
+func TestActiveInvestmentAccountsExcludeClosedAndUnsupported(t *testing.T) {
+	accounts := activeInvestmentAccounts([]apiAccount{
+		{ID: "broker", Type: "ACCOUNT_TYPE_TINKOFF", Status: "ACCOUNT_STATUS_OPEN"},
+		{ID: "iis", Type: "ACCOUNT_TYPE_TINKOFF_IIS", Status: "ACCOUNT_STATUS_OPEN"},
+		{ID: "closed", Type: "ACCOUNT_TYPE_TINKOFF", Status: "ACCOUNT_STATUS_CLOSED"},
+		{ID: "other", Type: "ACCOUNT_TYPE_INVEST_BOX", Status: "ACCOUNT_STATUS_OPEN"},
+	})
+	if len(accounts) != 2 || accounts[0].ID != "broker" || accounts[1].ID != "iis" {
+		t.Fatalf("active investment accounts = %#v", accounts)
+	}
+}

@@ -3,11 +3,11 @@
   "refresh":"Refresh","export":"Export","export_all":"Export reports (JSON/CSV/XLSX)","export_title":"Export","refresh_first":"Refresh data first",
   "search":"Search","search_label":"Search in table:","filter_label":"Column filter:","group_label":"Group by:","value":"Filter value","loading":"Loading…","loading_ops":"Loading operations…",
   "error":"Error","retry":"Retry","save":"Save","saved":"Saved","group":"Grouping","all":"All","details":"Instrument details","find_next":"Find next",
-  "from":"Period from:","to":"Period to:","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Coupon rate from, %","rate_to":"Coupon rate to, %","coupon_month":"Next coupon month",
+  "from":"Period from:","to":"Period to:","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Coupon rate from, %","rate_to":"Coupon rate to, %","maturity_from":"Maturity from","maturity_to":"Maturity to","reset_filters":"Reset filters","coupon_month":"Next coupon month",
   "cap_type":"Instrument type","cap_risk":"Risk level","cap_frequency":"Coupon frequency","cap_coupon_type":"Coupon type","cap_dividends":"Dividends in 12 months","no_conversion":"No conversion",
   "risk_low":"Low","risk_moderate":"Moderate","risk_high":"High","na":"n/a","monthly":"Monthly","quarterly":"Quarterly","semiannual":"Semiannual","annual":"Annual",
   "fixed":"Fixed","floating":"Floating","yes":"Yes","no":"No","type_share":"Shares","type_bond":"Bonds","type_etf":"ETFs","type_currency":"Currencies","type_future":"Futures","catalog_updated":"Catalog updated","free_cash":"Available cash","account_total":"Account total","all_accounts":"All accounts","grand_total":"Grand total","grand_converted":"Grand total (converted)",
-  "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","language":"Language","timezone":"Timezone",
+  "mode":"API mode","token_env":"Token environment variable","token_value":"Token in config","reports":"Reports directory","target_currency":"Target currency","retries":"Retries","retry_delay":"Retry delay, ms","auto_refresh":"Auto refresh, min (0 = off)","catalog_ttl":"Catalog TTL, h","instrument_load_timeout":"Instrument load timeout, s","language":"Language","timezone":"Timezone",
 
   "copy_cell":"Copy value","open_on_site":"Open on T-Invest website","close":"Close",
 
@@ -21,7 +21,7 @@
   "col_total_amount":"Total","col_converted_amount":"Total (converted)","col_converted_currency":"Conversion currency","col_conversion_rate":"Conversion rate",
   "col_id":"Operation ID","col_datetime":"Date and time","col_payment_amount":"Amount","col_payment_currency":"Amount currency","col_state":"State",
   "col_exchange":"Exchange","col_sector":"Sector","col_risk_level":"Risk level","col_coupon_type":"Coupon type","col_dividends":"Dividends",
-  "col_nominal":"Nominal","col_maturity_date":"Maturity date","col_uid":"UID","col_figi":"FIGI",
+  "col_nominal":"Nominal","col_maturity_date":"Maturity date","col_last_price":"Last price","col_uid":"UID","col_figi":"FIGI",
 
   "month_jan":"January","month_feb":"February","month_mar":"March","month_apr":"April","month_may":"May","month_jun":"June",
   "month_jul":"July","month_aug":"August","month_sep":"September","month_oct":"October","month_nov":"November","month_dec":"December"

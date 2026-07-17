@@ -31,15 +31,36 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 		TargetCurrency: targetCurrency,
 	}
 
+	accounts = activeInvestmentAccounts(accounts)
+	collected := make([]*model.Account, len(accounts))
+	errs := make(chan error, len(accounts))
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+	for i, account := range accounts {
+		wg.Add(1)
+		go func(i int, account apiAccount) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			acc, err := c.collectAccount(ctx, account, now)
+			if err != nil {
+				errs <- err
+				return
+			}
+			collected[i] = acc
+			if onProgress != nil {
+				onProgress(i+1, len(accounts))
+			}
+		}(i, account)
+	}
+	wg.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		return nil, err
+	}
+
 	grand := map[string]float64{}
-	for i, a := range accounts {
-		if onProgress != nil {
-			onProgress(i+1, len(accounts))
-		}
-		acc, err := c.collectAccount(ctx, a, now)
-		if err != nil {
-			return nil, err
-		}
+	for _, acc := range collected {
 		grand[acc.Total.Currency] += floatOf(acc.Total.Amount)
 		snap.Accounts = append(snap.Accounts, *acc)
 	}
@@ -52,6 +73,16 @@ func (c *Client) Collect(ctx context.Context, mode, targetCurrency string, now t
 		c.applyConversion(ctx, snap, targetCurrency)
 	}
 	return snap, nil
+}
+
+func activeInvestmentAccounts(accounts []apiAccount) []apiAccount {
+	active := make([]apiAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Status == "ACCOUNT_STATUS_OPEN" && (account.Type == "ACCOUNT_TYPE_TINKOFF" || account.Type == "ACCOUNT_TYPE_TINKOFF_IIS") {
+			active = append(active, account)
+		}
+	}
+	return active
 }
 
 // CollectOperations fetches operations across all accounts within the period.
@@ -362,7 +393,7 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 	}
 
 	// Narrow coupon window: 1 year back, 5 years forward (was 30 years).
-	events, err := c.Coupons(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
+	events, err := c.Coupons(ctx, p.Figi, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
 	if err != nil {
 		c.log("Не удалось получить купоны %s: %v", p.InstrumentUID, err)
 		return info
