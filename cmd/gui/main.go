@@ -174,9 +174,7 @@ func main() {
 		w.SetContent(widget.NewLabel(""))
 		w.SetOnClosed(func() { os.Exit(2) })
 		w.Show()
-		dialog.ShowCustomConfirm("T-Invest", "OK", "", widget.NewLabel(msg), func(ok bool) {
-			os.Exit(2)
-		}, w)
+		showStartupError(w, msg, func() { os.Exit(2) })
 		a.Run()
 		os.Exit(2)
 	}
@@ -794,7 +792,7 @@ func defaultViewName(now time.Time) string {
 func (g *grid) exportView(dir string) {
 	save := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
 		if err != nil {
-			dialog.ShowError(err, g.window)
+			showError(err, g.window)
 			return
 		}
 		if w == nil {
@@ -804,7 +802,7 @@ func (g *grid) exportView(dir string) {
 		_ = w.Close()
 		base := strings.TrimSuffix(path, filepath.Ext(path))
 		if e := g.writeView(base); e != nil {
-			dialog.ShowError(e, g.window)
+			showError(e, g.window)
 			return
 		}
 		dialog.ShowInformation(g.tr("export_title"), base+".csv\n"+base+".xlsx", g.window)
@@ -889,7 +887,7 @@ func (d *desktop) busy(key, label string, fn func() error) {
 		fyne.Do(func() {
 			d.status.SetText("")
 			if e != nil {
-				dialog.ShowError(e, d.window)
+				showError(e, d.window)
 			}
 		})
 		d.refreshMu.Lock()
@@ -1022,13 +1020,13 @@ func (d *desktop) exportAll() {
 	snap := d.snapshot
 	d.mu.RUnlock()
 	if snap == nil {
-		dialog.ShowError(fmt.Errorf("%s", d.tr("refresh_first")), d.window)
+		showError(fmt.Errorf("%s", d.tr("refresh_first")), d.window)
 		return
 	}
 	// The report set keeps its own file naming, so only the directory is asked.
 	pick := dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
 		if err != nil {
-			dialog.ShowError(err, d.window)
+			showError(err, d.window)
 			return
 		}
 		if dir == nil {
@@ -1036,7 +1034,7 @@ func (d *desktop) exportAll() {
 		}
 		paths, e := report.Write(dir.Path(), time.Now(), snap)
 		if e != nil {
-			dialog.ShowError(e, d.window)
+			showError(e, d.window)
 			return
 		}
 		dialog.ShowInformation(d.tr("export_title"), strings.Join(paths.All(), "\n"), d.window)
@@ -1926,7 +1924,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 			c.TimezoneOffset = &off
 		}
 		if e := c.Save(d.configPath); e != nil {
-			dialog.ShowError(e, d.window)
+			showError(e, d.window)
 			return
 		}
 		d.cfg = &c

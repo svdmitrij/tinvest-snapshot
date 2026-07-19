@@ -4,15 +4,50 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
 	"github.com/dmitry/tinvest-snapshot/internal/config"
 	"github.com/dmitry/tinvest-snapshot/internal/model"
 )
+
+func TestCopyableErrorMessagePreservesFullSelectableText(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+
+	const message = "Первая строка\nВторая строка: подробности ошибки"
+	view := copyableErrorMessage(message)
+	scroll, ok := view.(*container.Scroll)
+	if !ok {
+		t.Fatalf("error view type = %T, want scroll container", view)
+	}
+	label, ok := scroll.Content.(*widget.Label)
+	if !ok {
+		t.Fatalf("scroll content type = %T, want label", scroll.Content)
+	}
+	if label.Text != message {
+		t.Fatalf("message = %q, want %q", label.Text, message)
+	}
+	if !label.Selectable {
+		t.Fatal("error message must be selectable")
+	}
+}
+
+func TestShowErrorTextMatchesFyneErrorFormatting(t *testing.T) {
+	// Fyne's standard error dialog capitalizes the first rune; the shared
+	// copyable dialog retains that established presentation.
+	err := errors.New("ошибка\nс подробностями")
+	if got, want := errorDialogText(err), "Ошибка\nс подробностями"; got != want {
+		t.Fatalf("error dialog text = %q, want %q", got, want)
+	}
+}
 
 func TestInstrumentRowsShowBondSchedules(t *testing.T) {
 	d := &desktop{cfg: &config.Config{Language: "ru"}}
@@ -177,7 +212,7 @@ func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 			t.Fatalf("reloaded %q value = %d, want 600", input, loaded.InstrumentLoadTimeoutSeconds)
 		}
 	}
-	for _, keep := range []int{30, 600} {
+	for _, keep := range []int{10, 30, 600} {
 		c := config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: keep}
 		if err := c.Save(path); err != nil {
 			t.Fatal(err)
@@ -189,6 +224,24 @@ func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 		if loaded.InstrumentLoadTimeoutSeconds != keep {
 			t.Fatalf("positive value %d changed to %d", keep, loaded.InstrumentLoadTimeoutSeconds)
 		}
+	}
+}
+
+func TestInstrumentLoadTimeoutRoundTripIsApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	configToSave := &config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: 10}
+	if err := configToSave.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.InstrumentLoadTimeoutSeconds != 10 {
+		t.Fatalf("reloaded timeout = %d, want 10", loaded.InstrumentLoadTimeoutSeconds)
+	}
+	if got := (&desktop{cfg: loaded}).instrumentRefreshTimeout(); got != 10*time.Second {
+		t.Fatalf("applied timeout = %s, want 10s", got)
 	}
 }
 
