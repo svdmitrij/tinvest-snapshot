@@ -105,7 +105,7 @@ func TestInstrumentLoadTimeoutRange(t *testing.T) {
 	if err != nil || c.InstrumentLoadTimeoutSeconds != 600 {
 		t.Fatalf("absent timeout: got %+v, err %v", c, err)
 	}
-	for _, tc := range []struct{ raw, want int }{{0, 600}, {-1, 600}, {29, 600}, {30, 30}, {600, 600}, {3600, 3600}, {3601, 600}} {
+	for _, tc := range []struct{ raw, want int }{{0, 600}, {-1, 600}, {1, 1}, {10, 10}, {30, 30}, {600, 600}, {3600, 3600}, {3601, 600}} {
 		p := writeTemp(t, `{"token":"x","instrument_load_timeout_seconds":`+strconv.Itoa(tc.raw)+`}`)
 		c, err := Load(p)
 		if err != nil || c.InstrumentLoadTimeoutSeconds != tc.want {

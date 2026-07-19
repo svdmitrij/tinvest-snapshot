@@ -43,7 +43,7 @@ type Config struct {
 	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
 	// InstrumentLoadTimeoutSeconds bounds the full network bond load
 	// (catalog, mandatory enrichment and result assembly), in whole seconds.
-	// Default 600, range 30–3600.
+	// Default 600, range 1–3600.
 	InstrumentLoadTimeoutSeconds int `json:"instrument_load_timeout_seconds,omitempty"`
 	// DividendLoadTimeoutSeconds bounds the demand-driven dividend enrichment
 	// for shares, in whole seconds. Default 900, range 30–3600.
@@ -95,8 +95,9 @@ func (c *Config) applyDefaults() {
 	if c.CatalogTTLHours <= 0 {
 		c.CatalogTTLHours = 24
 	}
-	// Clamp both timeouts to [30, 3600]; 0, negative, and out-of-range → default.
-	if c.InstrumentLoadTimeoutSeconds < 30 || c.InstrumentLoadTimeoutSeconds > 3600 {
+	// A short instrument timeout is useful when diagnosing a slow or unavailable API.
+	// Keep zero and values outside the supported range at the default.
+	if c.InstrumentLoadTimeoutSeconds < 1 || c.InstrumentLoadTimeoutSeconds > 3600 {
 		c.InstrumentLoadTimeoutSeconds = 600
 	}
 	if c.DividendLoadTimeoutSeconds < 30 || c.DividendLoadTimeoutSeconds > 3600 {

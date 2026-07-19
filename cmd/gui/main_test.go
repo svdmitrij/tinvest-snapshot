@@ -212,7 +212,7 @@ func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 			t.Fatalf("reloaded %q value = %d, want 600", input, loaded.InstrumentLoadTimeoutSeconds)
 		}
 	}
-	for _, keep := range []int{30, 600} {
+	for _, keep := range []int{10, 30, 600} {
 		c := config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: keep}
 		if err := c.Save(path); err != nil {
 			t.Fatal(err)
@@ -224,6 +224,24 @@ func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 		if loaded.InstrumentLoadTimeoutSeconds != keep {
 			t.Fatalf("positive value %d changed to %d", keep, loaded.InstrumentLoadTimeoutSeconds)
 		}
+	}
+}
+
+func TestInstrumentLoadTimeoutRoundTripIsApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	configToSave := &config.Config{Mode: "sandbox", TokenEnv: "T", InstrumentLoadTimeoutSeconds: 10}
+	if err := configToSave.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.InstrumentLoadTimeoutSeconds != 10 {
+		t.Fatalf("reloaded timeout = %d, want 10", loaded.InstrumentLoadTimeoutSeconds)
+	}
+	if got := (&desktop{cfg: loaded}).instrumentRefreshTimeout(); got != 10*time.Second {
+		t.Fatalf("applied timeout = %s, want 10s", got)
 	}
 }
 
