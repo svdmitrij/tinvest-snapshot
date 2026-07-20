@@ -25,6 +25,7 @@ type Instrument struct {
 	RiskLevel               string   `json:"risk_level"`
 	CouponFrequency         int      `json:"coupon_frequency"`
 	FloatingCoupon          bool     `json:"floating_coupon"`
+	ForQualInvestor         *bool    `json:"for_qual_investor,omitempty"`
 	CouponRatePct           *float64 `json:"coupon_rate_pct,omitempty"`
 	NextCouponDate          string   `json:"next_coupon_date"`
 	HasDividends            bool     `json:"has_dividends"`

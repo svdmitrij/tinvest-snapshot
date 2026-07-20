@@ -90,8 +90,8 @@ type grid struct {
 	table                  *widget.Table
 	header, root           *fyne.Container
 	search                 *widget.Entry
-	filterColumn           *widget.Select
-	filterValue            *widget.Select
+	filters                []*dynamicFilterRow
+	filterBox              *fyne.Container
 	matchIndex             int
 	navigating             bool
 	group                  *widget.Select
@@ -101,6 +101,15 @@ type grid struct {
 	onRow                  func([]string)
 	tr                     func(string) string
 	fontScale              int // percent (60–200), default 100
+}
+
+type dynamicFilterRow struct {
+	column    *widget.Select
+	operation *widget.Select
+	value     *widget.SelectEntry
+	boolean   *widget.Select
+	valueBox  *fyne.Container
+	valueSet  bool
 }
 
 // resolveConfigPath finds or creates the config file. The resolution order is:
@@ -520,8 +529,13 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
-	g.filterValue = widget.NewSelect([]string{}, func(string) { g.apply() })
-	g.filterColumn = widget.NewSelect([]string{}, func(string) { g.updateFilterValues(); g.apply() })
+	g.filterBox = container.New(&flowLayout{widthFn: func() float32 {
+		if g.window == nil || g.window.Canvas() == nil {
+			return 0
+		}
+		return g.window.Canvas().Size().Width
+	}})
+	g.addFilterRow()
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
 		return newTableCell(tr)
 	}, func(id widget.TableCellID, o fyne.CanvasObject) {
@@ -613,10 +627,9 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
 	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
-	g.root = container.NewBorder(container.NewHBox(
+	g.root = container.NewBorder(container.NewVBox(container.NewHBox(
 		labeled(tr("search_label"), g.search), labeled(" ", next),
-		labeled(tr("filter_label"), g.filterColumn), labeled(tr("value"), g.filterValue),
-		labeled(tr("group_label"), g.group)), nil, nil, nil, g.table)
+		labeled(tr("group_label"), g.group)), g.filterBox), nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -625,60 +638,98 @@ func (g *grid) set(columns []string, rows [][]string) {
 	g.all = rows
 	g.mu.Unlock()
 	g.group.Options = append([]string{""}, columns...)
-	g.filterColumn.Options = append([]string{""}, columns...)
-	g.updateFilterValues()
+	g.updateDynamicFilters()
 	scale := float32(g.fontScale) / 100.0
 	for i, c := range columns {
 		g.table.SetColumnWidth(i, headerWidth(c, scale))
 	}
 	g.apply()
 }
-func (g *grid) updateFilterValues() {
+func (g *grid) addFilterRow() {
+	r := &dynamicFilterRow{column: widget.NewSelect([]string{}, nil), operation: widget.NewSelect([]string{}, nil), value: widget.NewSelectEntry([]string{}), boolean: widget.NewSelect([]string{"true", "false", "?"}, nil), valueBox: container.NewMax()}
+	r.column.PlaceHolder = g.tr("filter_column")
+	r.operation.PlaceHolder = " "
+	r.value.SetPlaceHolder(g.tr("value"))
+	r.boolean.PlaceHolder = g.tr("value")
+	r.valueBox.Add(r.value)
+	r.column.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
+	r.operation.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
+	r.value.OnChanged = func(string) { r.valueSet = true; g.updateDynamicFilters(); g.apply() }
+	r.boolean.OnChanged = func(string) { g.apply() }
+	g.filters = append(g.filters, r)
+	g.filterBox.Add(g.filterRowUI(r))
+}
+
+// filterRowUI renders one condition as a single compact line: column,
+// operation, value, add and remove — without captions above the widgets.
+func (g *grid) filterRowUI(r *dynamicFilterRow) fyne.CanvasObject {
+	plus := widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() })
+	remove := widget.NewButton("x", func() { g.removeFilterRow(r) })
+	return container.NewHBox(fixedWidth(filterColumnWidth, r.column), fixedWidth(filterOperationWidth, r.operation), fixedWidth(filterValueWidth, r.valueBox), plus, remove)
+}
+func (g *grid) removeFilterRow(target *dynamicFilterRow) {
+	for i, row := range g.filters {
+		if row != target {
+			continue
+		}
+		g.filters = append(g.filters[:i], g.filters[i+1:]...)
+		break
+	}
+	g.filterBox.RemoveAll()
+	if len(g.filters) == 0 {
+		g.addFilterRow()
+	}
+	for _, row := range g.filters {
+		g.filterBox.Add(g.filterRowUI(row))
+	}
+	g.updateDynamicFilters()
+	g.apply()
+}
+func (g *grid) conditions() []filterCondition {
+	out := make([]filterCondition, len(g.filters))
+	for i, r := range g.filters {
+		value := r.value.Text
+		if value == "" && r.valueSet {
+			value = emptyFilterValue
+		}
+		if columnType(g.columns, r.column.Selected) == boolColumn {
+			value = r.boolean.Selected
+		}
+		out[i] = filterCondition{r.column.Selected, r.operation.Selected, value}
+	}
+	return out
+}
+func (g *grid) updateDynamicFilters() {
+	conditions := g.conditions()
 	g.mu.RLock()
-	column := -1
-	for i, name := range g.columns {
-		if name == g.filterColumn.Selected {
-			column = i
-			break
-		}
-	}
-	values := map[string]bool{}
-	if column >= 0 {
-		for _, row := range g.all {
-			if column < len(row) && row[column] != "" {
-				values[row[column]] = true
-			}
-		}
-	}
+	columns, rows := append([]string(nil), g.columns...), append([][]string(nil), g.all...)
 	g.mu.RUnlock()
-	options := make([]string, 0, len(values)+1)
-	options = append(options, "")
-	for value := range values {
-		options = append(options, value)
+	for i, r := range g.filters {
+		r.column.Options = append([]string{""}, columns...)
+		r.column.Refresh()
+		values := conditionValues(filterRows(rows, columns, conditions, i), columns, conditions[i])
+		sort.Strings(values[1:])
+		if r.value.Text != "" && !slices.Contains(values, r.value.Text) {
+			values = append(values, r.value.Text)
+		}
+		if columnType(columns, r.column.Selected) == boolColumn {
+			r.operation.Options = []string{"=", "!="}
+			r.valueBox.RemoveAll()
+			r.valueBox.Add(r.boolean)
+		} else {
+			r.operation.Options = []string{">=", "<=", "=", "!="}
+			r.value.SetOptions(values)
+			r.valueBox.RemoveAll()
+			r.valueBox.Add(r.value)
+		}
+		r.operation.Refresh()
 	}
-	sort.Strings(options[1:])
-	selected := g.filterValue.Selected
-	if selected != "" && !values[selected] {
-		options = append(options, selected)
-	}
-	g.filterValue.Options = options
-	g.filterValue.Refresh()
 }
 func (g *grid) apply() {
 	g.mu.Lock()
-	filter := g.filterValue.Selected
-	filterCol := -1
-	for i, c := range g.columns {
-		if c == g.filterColumn.Selected {
-			filterCol = i
-			break
-		}
-	}
 	rows := make([][]string, 0, len(g.all))
-	for _, r := range g.all {
-		if filter == "" || filterCol < 0 || r[filterCol] == filter {
-			rows = append(rows, append([]string(nil), r...))
-		}
+	for _, r := range filterRows(g.all, g.columns, g.conditions(), -1) {
+		rows = append(rows, append([]string(nil), r...))
 	}
 
 	groupName := g.group.Selected
@@ -1115,7 +1166,7 @@ var portfolioFields = []string{"row_kind", "account", "account_id", "type", "tic
 
 var operationFields = []string{"id", "account_id", "account_name", "datetime", "operation_type", "instrument_type", "ticker", "isin", "name", "quantity", "payment_amount", "payment_currency", "state"}
 
-var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "nominal", "maturity_date", "last_price", "amortization", "amortization_dates", "offer_dates", "uid", "figi"}
+var instrumentFields = []string{"type", "ticker", "name", "isin", "currency", "exchange", "sector", "risk_level", "coupon_frequency", "coupon_type", "coupon_rate_pct", "next_coupon_date", "dividends", "qual", "nominal", "maturity_date", "last_price", "amortization", "amortization_dates", "offer_dates", "uid", "figi"}
 
 func portfolioRows(s *model.Snapshot, tr func(string) string) ([]string, [][]string) {
 	cols := trCols(tr, portfolioFields...)
@@ -1393,7 +1444,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		typeOptions = append(typeOptions, d.tr("type_"+t))
 	}
 	typeSelect := widget.NewSelect(typeOptions, nil)
-	typeSelect.SetSelected(d.tr("type_bond"))
+	typeSelect.SetSelected(d.tr("all"))
 	currency := widget.NewSelect(append([]string{d.tr("all")}, currencyOptions(d.scache, "")...), nil)
 	currency.SetSelected(d.tr("all"))
 	exchange, sector := widget.NewSelect([]string{}, nil), widget.NewSelect([]string{}, nil)
@@ -1735,21 +1786,6 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		load(false)
 	}
 	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)),
-		labeled(d.tr("cap_type"), typeSelect),
-		labeled(d.tr("currency"), currency),
-		labeled(d.tr("exchange"), exchange),
-		labeled(d.tr("sector"), sector),
-		labeled(d.tr("cap_risk"), risk),
-		labeled(d.tr("cap_frequency"), frequency),
-		labeled(d.tr("cap_coupon_type"), couponType),
-		labeled(d.tr("cap_dividends"), dividends),
-		labeled(d.tr("rate_from"), rateFrom),
-		labeled(d.tr("rate_to"), rateTo),
-		labeled(d.tr("maturity_from"), maturityFrom),
-		labeled(d.tr("maturity_to"), maturityTo),
-		labeled(d.tr("coupon_month"), month),
-		labeled(" ", button(d.tr("search"), widget.HighImportance, func() { load(false) })),
-		labeled(" ", button(d.tr("reset_filters"), widget.MediumImportance, d.resetInstrumentFilters)),
 		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
 		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
 	if d.scache != nil {
@@ -1902,8 +1938,12 @@ func instrumentRows(items []catalog.Instrument, d *desktop) ([]string, [][]strin
 		if i.HasDividends {
 			div = d.tr("yes")
 		}
+		qual := "?"
+		if i.ForQualInvestor != nil {
+			qual = strconv.FormatBool(*i.ForQualInvestor)
+		}
 		rows = append(rows, []string{i.Type, i.Ticker, i.Name, i.ISIN, i.Currency, i.Exchange, i.Sector, risk, freq, ct, rate,
-			naIfEmpty(i.NextCouponDate, d), div, naIfEmpty(i.Nominal, d), maturityDay(i.MaturityDate, d), naIfEmpty(i.LastPrice, d),
+			naIfEmpty(i.NextCouponDate, d), div, qual, naIfEmpty(i.Nominal, d), maturityDay(i.MaturityDate, d), naIfEmpty(i.LastPrice, d),
 			amortizationLabel(i, d), dateList(i.AmortizationDates, d), dateList(i.OfferDates, d), i.UID, i.FIGI})
 	}
 	return cols, rows

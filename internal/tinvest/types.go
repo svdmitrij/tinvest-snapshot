@@ -66,6 +66,7 @@ type bond struct {
 	RiskLevel             string      `json:"riskLevel"`
 	Currency              string      `json:"currency"`
 	FloatingCouponFlag    bool        `json:"floatingCouponFlag"`
+	ForQualInvestorFlag   *bool       `json:"forQualInvestorFlag"`
 	PerpetualFlag         bool        `json:"perpetualFlag"`
 	AmortizationFlag      bool        `json:"amortizationFlag"`
 }
@@ -131,6 +132,7 @@ type apiInstrument struct {
 	RiskLevel             string      `json:"riskLevel"`
 	CouponQuantityPerYear int         `json:"couponQuantityPerYear"`
 	FloatingCouponFlag    bool        `json:"floatingCouponFlag"`
+	ForQualInvestorFlag   *bool       `json:"forQualInvestorFlag"`
 	AmortizationFlag      bool        `json:"amortizationFlag"`
 	Nominal               money.Money `json:"nominal"`
 	MaturityDate          string      `json:"maturityDate"`
