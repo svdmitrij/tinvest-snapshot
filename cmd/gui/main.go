@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"image/color"
@@ -62,7 +63,7 @@ type desktop struct {
 	loadInstruments                                                func(bool)
 	resetInstrumentFilters                                         func()
 	refreshMu                                                      sync.Mutex
-	refreshing                                                     map[string]bool
+	refreshing                                                     map[string]string
 }
 
 const refreshTimeout = 30 * time.Second
@@ -71,6 +72,10 @@ const refreshTimeout = 30 * time.Second
 // network instrument load (FR51/FR52); other network paths keep refreshTimeout.
 func (d *desktop) instrumentRefreshTimeout() time.Duration {
 	return time.Duration(d.cfg.InstrumentLoadTimeoutSeconds) * time.Second
+}
+
+func (d *desktop) portfolioRefreshTimeout() time.Duration {
+	return time.Duration(d.cfg.PortfolioLoadTimeoutSeconds) * time.Second
 }
 
 func (d *desktop) dividendLoadTimeout() time.Duration {
@@ -873,27 +878,80 @@ func (d *desktop) client() (*tinvest.Client, error) {
 func (d *desktop) busy(key, label string, fn func() error) {
 	d.refreshMu.Lock()
 	if d.refreshing == nil {
-		d.refreshing = make(map[string]bool)
+		d.refreshing = make(map[string]string)
 	}
-	if d.refreshing[key] {
+	if _, running := d.refreshing[key]; running {
 		d.refreshMu.Unlock()
+		fyne.Do(func() { d.refreshStatus() })
 		return
 	}
-	d.refreshing[key] = true
+	d.refreshing[key] = label
 	d.refreshMu.Unlock()
-	fyne.Do(func() { d.status.SetText(label) })
+	fyne.Do(func() { d.refreshStatus() })
 	go func() {
 		e := fn()
+		d.refreshMu.Lock()
+		delete(d.refreshing, key)
+		d.refreshMu.Unlock()
 		fyne.Do(func() {
-			d.status.SetText("")
+			d.refreshStatus()
 			if e != nil {
 				showError(e, d.window)
 			}
 		})
-		d.refreshMu.Lock()
-		d.refreshing[key] = false
-		d.refreshMu.Unlock()
 	}()
+}
+
+func (d *desktop) refreshStatus() {
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+	for _, label := range d.refreshing {
+		d.status.SetText(label)
+		return
+	}
+	d.status.SetText("")
+}
+
+func (d *desktop) setBusyStatus(key, label string) {
+	d.refreshMu.Lock()
+	if _, running := d.refreshing[key]; running {
+		d.refreshing[key] = label
+	}
+	d.refreshMu.Unlock()
+	d.refreshStatus()
+}
+
+func (d *desktop) loadTimeoutError(scope, setting string, timeout time.Duration) error {
+	return fmt.Errorf(d.tr(scope), int(timeout.Seconds()), setting)
+}
+
+func (d *desktop) catalogError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return d.loadTimeoutError("instrument_load_timeout_error", "instrument_load_timeout_seconds", d.instrumentRefreshTimeout())
+	}
+	var enrichment *tinvest.EnrichmentError
+	if errors.As(err, &enrichment) {
+		return fmt.Errorf(d.tr("instrument_enrichment_failed"), enrichment.Failed)
+	}
+	return err
+}
+
+func (d *desktop) failedInstrumentTypesError(types []string, cause error, enrichmentFailures int) error {
+	names := make([]string, 0, len(types))
+	seen := make(map[string]bool)
+	for _, typ := range types {
+		if !seen[typ] {
+			names = append(names, d.tr("type_"+typ))
+			seen[typ] = true
+		}
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return fmt.Errorf(d.tr("instrument_types_timeout_error"), strings.Join(names, ", "), int(d.instrumentRefreshTimeout().Seconds()), "instrument_load_timeout_seconds")
+	}
+	if enrichmentFailures > 0 {
+		return fmt.Errorf(d.tr("instrument_types_enrichment_failed"), strings.Join(names, ", "), enrichmentFailures)
+	}
+	return fmt.Errorf(d.tr("instrument_types_failed_error"), strings.Join(names, ", "))
 }
 func (d *desktop) refreshPortfolio() {
 	d.busy("portfolio", d.tr("loading"), func() error {
@@ -902,14 +960,18 @@ func (d *desktop) refreshPortfolio() {
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		timeout := d.portfolioRefreshTimeout()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		snap, e := c.Collect(ctx, d.cfg.Mode, d.cfg.TargetCurrency, now, func(current, total int) {
 			fyne.Do(func() {
-				d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading"), current, total))
+				d.setBusyStatus("portfolio", fmt.Sprintf("%s (%d/%d)", d.tr("loading"), current, total))
 			})
 		})
 		if e != nil {
+			if errors.Is(e, context.DeadlineExceeded) {
+				return d.loadTimeoutError("portfolio_load_timeout_error", "portfolio_load_timeout_seconds", timeout)
+			}
 			return e
 		}
 		d.mu.Lock()
@@ -947,7 +1009,7 @@ func (d *desktop) refreshOperations() {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 		operations, operationPeriod, err := client.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
-			fyne.Do(func() { d.status.SetText(fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total)) })
+			fyne.Do(func() { d.setBusyStatus("operations", fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total)) })
 		})
 		if err != nil {
 			return err
@@ -973,13 +1035,15 @@ func (d *desktop) showPortfolio() {
 	d.portfolio.group.SetSelected(d.tr("col_account"))
 	if !d.portfolioVisited {
 		d.portfolioVisited = true
-		if cached, err := loadSnapshotCache(d.portfolioCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, time.Now()) {
+		if cached, err := loadSnapshotCache(d.portfolioCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.Snapshot != nil {
 			d.mu.Lock()
 			d.snapshot = cached.Snapshot
 			d.mu.Unlock()
 			cols, rows := portfolioRows(cached.Snapshot, d.tr)
 			d.portfolio.set(cols, rows)
-			return
+			if cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, time.Now()) {
+				return
+			}
 		}
 		d.refreshPortfolio()
 	}
@@ -990,7 +1054,7 @@ func (d *desktop) showOperations() {
 		d.operationsVisited = true
 		now := time.Now()
 		from, to := operationCacheRange(dateText(d.from), dateText(d.to), now)
-		if cached, err := loadSnapshotCache(d.operationsCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.From == from && cached.To == to && cached.Snapshot != nil && cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, now) {
+		if cached, err := loadSnapshotCache(d.operationsCachePath); err == nil && cached.Mode == d.cfg.Mode && cached.From == from && cached.To == to && cached.Snapshot != nil {
 			d.mu.Lock()
 			if d.snapshot == nil {
 				d.snapshot = &model.Snapshot{}
@@ -1000,7 +1064,9 @@ func (d *desktop) showOperations() {
 			d.mu.Unlock()
 			cols, rows := operationRows(snapshot, d.tr, *d.cfg.TimezoneOffset)
 			d.operations.set(cols, rows)
-			return
+			if cacheFresh(cached.UpdatedAt, d.cfg.CatalogTTLHours, now) {
+				return
+			}
 		}
 		d.refreshOperations()
 	}
@@ -1502,12 +1568,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					return err
 				}
 				base := enrichmentFilter(currentFilter)
-				ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
 				enriched, err := client.EnrichCatalog(ctx, catalog.Search(sc.AllInstruments(), base), time.Now())
-				if err != nil {
-					return err
-				}
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item
@@ -1526,17 +1589,21 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				}
 				err = d.scache.SaveSegmented(d.cachePath)
 				d.mu.Unlock()
-				if err == nil {
-					fyne.Do(applyFilters)
+				fyne.Do(applyFilters)
+				if err != nil {
+					return d.catalogError(err)
 				}
-				return err
+				return nil
 			})
 			return
 		}
 		// Force refresh: type-specific or "Все".
+		// Cached rows remain useful while a stale network refresh is running.
+		fyne.Do(applyFilters)
 		typ := currentFilter.Type // "" means "Все"
 		if typ == "" {
 			d.busy("instruments-refresh-all", d.tr("loading"), func() error {
+				defer fyne.Do(applyFilters)
 				client, err := d.client()
 				if err != nil {
 					return err
@@ -1544,6 +1611,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				now := time.Now()
 				var muErrs sync.Mutex
 				var failed []string
+				var enrichmentFailures int
+				var saveErr error
 				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
 				client.Catalog(ctx, now, func(kind string, items []catalog.Instrument, err error) {
@@ -1555,12 +1624,6 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					}
 					if kind == "bond" && len(items) > 0 {
 						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now)
-						if e != nil {
-							muErrs.Lock()
-							failed = append(failed, kind)
-							muErrs.Unlock()
-							return
-						}
 						byUID := make(map[string]catalog.Instrument, len(enriched))
 						for _, it := range enriched {
 							byUID[it.UID] = it
@@ -1570,6 +1633,15 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 								items[i] = it
 							}
 						}
+						if e != nil {
+							muErrs.Lock()
+							failed = append(failed, kind)
+							var enrichmentError *tinvest.EnrichmentError
+							if errors.As(e, &enrichmentError) {
+								enrichmentFailures += enrichmentError.Failed
+							}
+							muErrs.Unlock()
+						}
 					}
 					d.mu.Lock()
 					if d.scache == nil {
@@ -1577,27 +1649,28 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					}
 					d.scache.Mode = d.cfg.Mode
 					d.scache.Set(kind, items, now)
-					d.scache.SaveSegmented(d.cachePath)
+					if err := d.scache.SaveSegmented(d.cachePath); err != nil && saveErr == nil {
+						saveErr = err
+					}
 					d.mu.Unlock()
 				})
-				if len(failed) > 0 {
-					return fmt.Errorf("%s: %s", d.tr("load_failed"), strings.Join(failed, ", "))
+				if saveErr != nil {
+					return saveErr
 				}
-				fyne.Do(applyFilters)
+				if len(failed) > 0 {
+					return d.failedInstrumentTypesError(failed, ctx.Err(), enrichmentFailures)
+				}
 				return nil
 			})
 		} else {
 			d.busy("instruments-refresh-"+typ, d.tr("loading"), func() error {
+				defer fyne.Do(applyFilters)
 				client, err := d.client()
 				if err != nil {
 					return err
 				}
 				now := time.Now()
-				timeout := refreshTimeout
-				if typ == "bond" {
-					timeout = d.instrumentRefreshTimeout()
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
 				var catErr error
 				var catItems []catalog.Instrument
@@ -1609,13 +1682,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					catItems = items
 				})
 				if catErr != nil {
-					return catErr
+					return d.catalogError(catErr)
 				}
 				if typ == "bond" && len(catItems) > 0 {
 					enriched, e := client.EnrichCatalog(ctx, catalog.Search(catItems, catalog.Filter{Type: "bond"}), now)
-					if e != nil {
-						return e
-					}
 					byUID := make(map[string]catalog.Instrument, len(enriched))
 					for _, it := range enriched {
 						byUID[it.UID] = it
@@ -1624,6 +1694,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 						if it, ok := byUID[catItems[i].UID]; ok {
 							catItems[i] = it
 						}
+					}
+					if e != nil {
+						catErr = e
 					}
 				}
 				d.mu.Lock()
@@ -1637,8 +1710,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					return err
 				}
 				d.mu.Unlock()
-				fyne.Do(applyFilters)
-				return nil
+				return d.catalogError(catErr)
 			})
 		}
 	}
@@ -1888,6 +1960,8 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	ttl.SetText(strconv.Itoa(d.cfg.CatalogTTLHours))
 	loadTimeout := widget.NewEntry()
 	loadTimeout.SetText(strconv.Itoa(d.cfg.InstrumentLoadTimeoutSeconds))
+	portfolioTimeout := widget.NewEntry()
+	portfolioTimeout.SetText(strconv.Itoa(d.cfg.PortfolioLoadTimeoutSeconds))
 	lang := widget.NewSelect([]string{"ru", "en"}, nil)
 	lang.SetSelected(d.cfg.Language)
 	tzOptions := make([]string, 0, 47)
@@ -1907,7 +1981,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	if *d.cfg.TimezoneOffset < 0 {
 		tz.SetSelected("UTC" + strconv.Itoa(*d.cfg.TimezoneOffset))
 	}
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("instrument_load_timeout"), loadTimeout), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
+	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("instrument_load_timeout"), loadTimeout), widget.NewFormItem(d.tr("portfolio_load_timeout"), portfolioTimeout), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -1919,6 +1993,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		c.RetryDelayMs = atoi(delay.Text)
 		c.CatalogTTLHours = atoi(ttl.Text)
 		c.InstrumentLoadTimeoutSeconds = atoi(loadTimeout.Text)
+		c.PortfolioLoadTimeoutSeconds = atoi(portfolioTimeout.Text)
 		c.Language = lang.Selected
 		if off, ok := tzLabels[tz.Selected]; ok {
 			c.TimezoneOffset = &off

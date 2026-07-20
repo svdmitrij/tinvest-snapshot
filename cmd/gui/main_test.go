@@ -5,7 +5,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"testing"
 	"time"
@@ -194,6 +196,17 @@ func TestInstrumentRefreshTimeoutComesFromConfig(t *testing.T) {
 	}
 }
 
+func TestPortfolioRefreshTimeoutComesFromConfig(t *testing.T) {
+	d := &desktop{cfg: &config.Config{PortfolioLoadTimeoutSeconds: 180}}
+	if got := d.portfolioRefreshTimeout(); got != 180*time.Second {
+		t.Fatalf("default portfolio timeout = %s, want 180s", got)
+	}
+	d.cfg.PortfolioLoadTimeoutSeconds = 5
+	if got := d.portfolioRefreshTimeout(); got != 5*time.Second {
+		t.Fatalf("configured portfolio timeout = %s, want 5s", got)
+	}
+}
+
 func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	for _, input := range []string{"", "abc", "0", "-1"} {
@@ -248,7 +261,7 @@ func TestInstrumentLoadTimeoutRoundTripIsApplied(t *testing.T) {
 func TestFreshInstrumentCacheUsesImmediateLocalPath(t *testing.T) {
 	called := make(chan bool, 1)
 	d := &desktop{
-		cfg:   &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
+		cfg:    &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
 		scache: &catalog.SegmentedCache{Mode: "sandbox", Bond: &catalog.Segment{UpdatedAt: time.Now(), Instruments: []catalog.Instrument{{UID: "bond"}}}},
 		loadInstruments: func(force bool) {
 			called <- force
@@ -390,6 +403,30 @@ func TestTranslationFilesHaveSameKeys(t *testing.T) {
 	for k := range en {
 		if ru[k] == "" {
 			t.Errorf("missing ru key %s", k)
+		}
+	}
+}
+
+func TestTranslationFilesContainLiteralTrKeys(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := regexp.MustCompile(`(?:d|g|c)\.tr\("([^"]+)"\)`).FindAllSubmatch(source, -1)
+	for _, lang := range []string{"ru", "en"} {
+		data, err := translations.ReadFile("i18n/" + lang + ".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dictionary map[string]string
+		if err := json.Unmarshal(data, &dictionary); err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range keys {
+			key := string(match[1])
+			if dictionary[key] == "" {
+				t.Errorf("%s: missing translation for %s", lang, key)
+			}
 		}
 	}
 }

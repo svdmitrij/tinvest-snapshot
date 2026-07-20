@@ -154,17 +154,18 @@ func TestPortfolioDividendsUseUIDInstrumentID(t *testing.T) {
 	}
 }
 
-func TestEnrichCatalogRejectsPartialCouponFailure(t *testing.T) {
+func TestEnrichCatalogPreservesPartialCouponFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	}))
 	defer server.Close()
 	got, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
-	if err == nil || !strings.Contains(err.Error(), "GetBondEvents uid=uid") {
-		t.Fatalf("partial coupon failure was accepted: %v", err)
+	var enrichment *EnrichmentError
+	if !errors.As(err, &enrichment) || enrichment.Failed != 1 {
+		t.Fatalf("partial coupon failure = %v, want one reported failure", err)
 	}
-	if got != nil {
-		t.Fatalf("partial catalog was returned: %#v", got)
+	if len(got) != 1 || got[0].Enriched {
+		t.Fatalf("partial catalog = %#v, want one un-enriched row", got)
 	}
 }
 
@@ -284,7 +285,7 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 // each, under the documented 200-requests/60s InstrumentsService window. Time
 // is compressed 40x (window 75 ms holds 10 requests, pacing 320 ms -> 8 ms).
 // At the current pacing the full volume needs ~499s: a 300-second budget must
-// fail without publishing a partial catalog, a 600-second budget must complete
+// preserve the partial catalog, while a 600-second budget must complete
 // all 1558 bonds without a single 429.
 func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 	const (
@@ -341,8 +342,8 @@ func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected deadline exceeded, got %v", err)
 		}
-		if got != nil {
-			t.Fatal("timed-out enrichment must not return a partial catalog")
+		if len(got) != liveBonds {
+			t.Fatalf("timed-out enrichment returned %d rows, want %d partial rows", len(got), liveBonds)
 		}
 	})
 

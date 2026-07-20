@@ -114,6 +114,21 @@ func TestInstrumentLoadTimeoutRange(t *testing.T) {
 	}
 }
 
+func TestPortfolioLoadTimeoutRange(t *testing.T) {
+	p := writeTemp(t, `{"token":"x"}`)
+	c, err := Load(p)
+	if err != nil || c.PortfolioLoadTimeoutSeconds != 180 {
+		t.Fatalf("absent portfolio timeout: got %+v, err %v", c, err)
+	}
+	for _, tc := range []struct{ raw, want int }{{0, 180}, {4, 180}, {5, 5}, {180, 180}, {3601, 180}} {
+		p := writeTemp(t, `{"token":"x","portfolio_load_timeout_seconds":`+strconv.Itoa(tc.raw)+`}`)
+		c, err := Load(p)
+		if err != nil || c.PortfolioLoadTimeoutSeconds != tc.want {
+			t.Fatalf("portfolio timeout %d: got %d want %d, err %v", tc.raw, c.PortfolioLoadTimeoutSeconds, tc.want, err)
+		}
+	}
+}
+
 func TestDividendLoadTimeoutRange(t *testing.T) {
 	p := writeTemp(t, `{"token":"x"}`)
 	c, err := Load(p)
