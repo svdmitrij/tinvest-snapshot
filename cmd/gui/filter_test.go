@@ -11,11 +11,26 @@ func TestDynamicFiltersCompareValuesAndCombineWithAnd(t *testing.T) {
 	if len(got) != 1 || got[0][2] != "b" {
 		t.Fatalf("filtered rows = %#v", got)
 	}
-	if !matchesCondition(rows[2], columns, filterCondition{"Text", "=", ""}) {
-		t.Fatal("empty must be data")
+	if got := filterRows(rows, columns, []filterCondition{{"Text", "=", ""}}, -1); len(got) != len(rows) {
+		t.Fatalf("incomplete condition restricted rows: %#v", got)
 	}
 	if !matchesCondition(rows[1], columns, filterCondition{"Text", "<=", "a"}) {
 		t.Fatal("text ordering must work")
+	}
+}
+
+func TestTypedComparisonParsesMoneyAndCalendarDate(t *testing.T) {
+	if got := compareValues("1 500,00 ₽", "1000", numberColumn); got <= 0 {
+		t.Fatalf("currency comparison = %d", got)
+	}
+	if got := compareValues("2026-01-02 01:00:00", "2026-01-02", dateColumn); got != 0 {
+		t.Fatalf("datetime calendar comparison = %d", got)
+	}
+	columns := []string{"Дата и время", "Номинал"}
+	rows := [][]string{{"2026-01-02 01:00:00", "1 500,00 ₽"}, {"2026-01-03 01:00:00", "500 ₽"}}
+	got := filterRows(rows, columns, []filterCondition{{"Дата и время", "=", "2026-01-02"}, {"Номинал", ">=", "1000"}}, -1)
+	if len(got) != 1 {
+		t.Fatalf("typed filter = %#v", got)
 	}
 }
 

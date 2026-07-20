@@ -107,6 +107,8 @@ type dynamicFilterRow struct {
 	column    *widget.Select
 	operation *widget.Select
 	value     *widget.SelectEntry
+	boolean   *widget.Select
+	valueBox  *fyne.Container
 }
 
 // resolveConfigPath finds or creates the config file. The resolution order is:
@@ -638,14 +640,16 @@ func (g *grid) set(columns []string, rows [][]string) {
 	g.apply()
 }
 func (g *grid) addFilterRow() {
-	r := &dynamicFilterRow{column: widget.NewSelect([]string{}, nil), operation: widget.NewSelect([]string{}, nil), value: widget.NewSelectEntry([]string{})}
+	r := &dynamicFilterRow{column: widget.NewSelect([]string{}, nil), operation: widget.NewSelect([]string{}, nil), value: widget.NewSelectEntry([]string{}), boolean: widget.NewSelect([]string{"true", "false", "?"}, nil), valueBox: container.NewMax()}
+	r.valueBox.Add(r.value)
 	r.column.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.operation.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.value.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
+	r.boolean.OnChanged = func(string) { g.apply() }
 	plus := widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() })
 	remove := widget.NewButton("x", func() { g.removeFilterRow(r) })
 	g.filters = append(g.filters, r)
-	g.filterBox.Add(container.NewHBox(labeled(g.tr("filter_column"), r.column), labeled(g.tr("filter_operation"), r.operation), labeled(g.tr("value"), r.value), plus, remove))
+	g.filterBox.Add(container.NewHBox(labeled(g.tr("filter_column"), r.column), labeled(g.tr("filter_operation"), r.operation), labeled(g.tr("value"), r.valueBox), plus, remove))
 }
 func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	for i, row := range g.filters {
@@ -662,7 +666,7 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	for _, row := range g.filters {
 		current := row
 		g.filterBox.Add(container.NewHBox(
-			labeled(g.tr("filter_column"), current.column), labeled(g.tr("filter_operation"), current.operation), labeled(g.tr("value"), current.value),
+			labeled(g.tr("filter_column"), current.column), labeled(g.tr("filter_operation"), current.operation), labeled(g.tr("value"), current.valueBox),
 			widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() }),
 			widget.NewButton("x", func() { g.removeFilterRow(current) }),
 		))
@@ -673,7 +677,11 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 func (g *grid) conditions() []filterCondition {
 	out := make([]filterCondition, len(g.filters))
 	for i, r := range g.filters {
-		out[i] = filterCondition{r.column.Selected, r.operation.Selected, r.value.Text}
+		value := r.value.Text
+		if columnType(g.columns, r.column.Selected) == boolColumn {
+			value = r.boolean.Selected
+		}
+		out[i] = filterCondition{r.column.Selected, r.operation.Selected, value}
 	}
 	return out
 }
@@ -690,17 +698,15 @@ func (g *grid) updateDynamicFilters() {
 		if r.value.Text != "" && !slices.Contains(values, r.value.Text) {
 			values = append(values, r.value.Text)
 		}
-		r.value.SetOptions(values)
-		isBool := len(values) > 1
-		for _, value := range values[1:] {
-			if value != "true" && value != "false" && value != "?" {
-				isBool = false
-			}
-		}
-		if isBool {
+		if columnType(columns, r.column.Selected) == boolColumn {
 			r.operation.Options = []string{"=", "!="}
+			r.valueBox.RemoveAll()
+			r.valueBox.Add(r.boolean)
 		} else {
 			r.operation.Options = []string{">=", "<=", "=", "!="}
+			r.value.SetOptions(values)
+			r.valueBox.RemoveAll()
+			r.valueBox.Add(r.value)
 		}
 		r.operation.Refresh()
 	}
