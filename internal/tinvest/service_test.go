@@ -78,6 +78,25 @@ func TestCatalogRetainsDirectoryNextCouponDate(t *testing.T) {
 	t.Fatalf("directory next coupon date was lost: %#v", all)
 }
 
+func TestCatalogRetainsForQualInvestorFlagAndMissingValue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if method == "Bonds" {
+			_, _ = w.Write([]byte(`{"instruments":[{"uid":"yes","forQualInvestorFlag":true},{"uid":"unknown"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"instruments":[]}`))
+	}))
+	defer server.Close()
+	items, err := New(server.URL, "token", "test", 0, time.Millisecond, nil).CatalogKind(context.Background(), "bond")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].ForQualInvestor == nil || !*items[0].ForQualInvestor || items[1].ForQualInvestor != nil {
+		t.Fatalf("qual flags = %#v", items)
+	}
+}
+
 func TestEnrichCatalogGetsCouponFromBondEvents(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
