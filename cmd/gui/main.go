@@ -529,7 +529,12 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
-	g.filterBox = container.NewVBox()
+	g.filterBox = container.New(&flowLayout{widthFn: func() float32 {
+		if g.window == nil || g.window.Canvas() == nil {
+			return 0
+		}
+		return g.window.Canvas().Size().Width
+	}})
 	g.addFilterRow()
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
 		return newTableCell(tr)
@@ -642,15 +647,25 @@ func (g *grid) set(columns []string, rows [][]string) {
 }
 func (g *grid) addFilterRow() {
 	r := &dynamicFilterRow{column: widget.NewSelect([]string{}, nil), operation: widget.NewSelect([]string{}, nil), value: widget.NewSelectEntry([]string{}), boolean: widget.NewSelect([]string{"true", "false", "?"}, nil), valueBox: container.NewMax()}
+	r.column.PlaceHolder = g.tr("filter_column")
+	r.operation.PlaceHolder = " "
+	r.value.SetPlaceHolder(g.tr("value"))
+	r.boolean.PlaceHolder = g.tr("value")
 	r.valueBox.Add(r.value)
 	r.column.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.operation.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.value.OnChanged = func(string) { r.valueSet = true; g.updateDynamicFilters(); g.apply() }
 	r.boolean.OnChanged = func(string) { g.apply() }
+	g.filters = append(g.filters, r)
+	g.filterBox.Add(g.filterRowUI(r))
+}
+
+// filterRowUI renders one condition as a single compact line: column,
+// operation, value, add and remove — without captions above the widgets.
+func (g *grid) filterRowUI(r *dynamicFilterRow) fyne.CanvasObject {
 	plus := widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() })
 	remove := widget.NewButton("x", func() { g.removeFilterRow(r) })
-	g.filters = append(g.filters, r)
-	g.filterBox.Add(container.NewHBox(labeled(g.tr("filter_column"), r.column), labeled(g.tr("filter_operation"), r.operation), labeled(g.tr("value"), r.valueBox), plus, remove))
+	return container.NewHBox(fixedWidth(filterColumnWidth, r.column), fixedWidth(filterOperationWidth, r.operation), fixedWidth(filterValueWidth, r.valueBox), plus, remove)
 }
 func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	for i, row := range g.filters {
@@ -665,12 +680,7 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 		g.addFilterRow()
 	}
 	for _, row := range g.filters {
-		current := row
-		g.filterBox.Add(container.NewHBox(
-			labeled(g.tr("filter_column"), current.column), labeled(g.tr("filter_operation"), current.operation), labeled(g.tr("value"), current.valueBox),
-			widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() }),
-			widget.NewButton("x", func() { g.removeFilterRow(current) }),
-		))
+		g.filterBox.Add(g.filterRowUI(row))
 	}
 	g.updateDynamicFilters()
 	g.apply()
