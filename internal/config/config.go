@@ -39,12 +39,15 @@ type Config struct {
 	// AppName is sent in the x-app-name header for API analytics.
 	AppName string `json:"app_name"`
 	// GUI-only preferences are ignored by the CLI and keep the file backwards compatible.
-	AutoRefreshMinutes int    `json:"auto_refresh_minutes,omitempty"`
-	CatalogTTLHours    int    `json:"catalog_ttl_hours,omitempty"`
+	AutoRefreshMinutes int `json:"auto_refresh_minutes,omitempty"`
+	CatalogTTLHours    int `json:"catalog_ttl_hours,omitempty"`
 	// InstrumentLoadTimeoutSeconds bounds the full network bond load
 	// (catalog, mandatory enrichment and result assembly), in whole seconds.
 	// Default 600, range 1–3600.
 	InstrumentLoadTimeoutSeconds int `json:"instrument_load_timeout_seconds,omitempty"`
+	// PortfolioLoadTimeoutSeconds bounds portfolio collection, including
+	// enrichment requests. Default 180, range 5–3600.
+	PortfolioLoadTimeoutSeconds int `json:"portfolio_load_timeout_seconds,omitempty"`
 	// DividendLoadTimeoutSeconds bounds the demand-driven dividend enrichment
 	// for shares, in whole seconds. Default 900, range 30–3600.
 	DividendLoadTimeoutSeconds int    `json:"dividend_load_timeout_seconds,omitempty"`
@@ -99,6 +102,9 @@ func (c *Config) applyDefaults() {
 	// Keep zero and values outside the supported range at the default.
 	if c.InstrumentLoadTimeoutSeconds < 1 || c.InstrumentLoadTimeoutSeconds > 3600 {
 		c.InstrumentLoadTimeoutSeconds = 600
+	}
+	if c.PortfolioLoadTimeoutSeconds < 5 || c.PortfolioLoadTimeoutSeconds > 3600 {
+		c.PortfolioLoadTimeoutSeconds = 180
 	}
 	if c.DividendLoadTimeoutSeconds < 30 || c.DividendLoadTimeoutSeconds > 3600 {
 		c.DividendLoadTimeoutSeconds = 900

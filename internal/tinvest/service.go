@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dmitry/tinvest-snapshot/internal/catalog"
@@ -113,7 +114,7 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 	// the GUI's overall timeout under normal response latency.
 	sem := make(chan struct{}, 3)
 	done := make(chan struct{}, len(out))
-	errs := make(chan error, len(out))
+	var failed atomic.Int32
 	for i := range out {
 		go func(i int) {
 			sem <- struct{}{}
@@ -142,13 +143,13 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 					}
 					out[i].MaturityDate = effectiveMaturity(contractual, out[i].OfferDates, now)
 				} else {
-					errs <- fmt.Errorf("GetBondEvents uid=%s: %w", out[i].UID, e)
+					failed.Add(1)
 					return
 				}
 			} else if out[i].Type == "share" {
 				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
 				if e != nil {
-					errs <- fmt.Errorf("GetDividends uid=%s: %w", out[i].UID, e)
+					failed.Add(1)
 					return
 				}
 				out[i].HasDividends = len(d) > 0
@@ -159,13 +160,24 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 	for i := 0; i < len(out); i++ {
 		<-done
 	}
-	select {
-	case err := <-errs:
-		return nil, err
-	default:
-		return out, nil
+	if count := int(failed.Load()); count > 0 {
+		return out, &EnrichmentError{Failed: count, Cause: ctx.Err()}
 	}
+	return out, nil
 }
+
+// EnrichmentError reports per-instrument failures while preserving usable
+// catalog rows. Callers can render unsuccessful fields as unavailable.
+type EnrichmentError struct {
+	Failed int
+	Cause  error
+}
+
+func (e *EnrichmentError) Error() string {
+	return fmt.Sprintf("catalog enrichment failed for %d instruments", e.Failed)
+}
+
+func (e *EnrichmentError) Unwrap() error { return e.Cause }
 
 func effectiveMaturity(contractual string, offers []string, now time.Time) string {
 	var nearest time.Time

@@ -5,7 +5,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"testing"
 	"time"
@@ -194,6 +196,17 @@ func TestInstrumentRefreshTimeoutComesFromConfig(t *testing.T) {
 	}
 }
 
+func TestPortfolioRefreshTimeoutComesFromConfig(t *testing.T) {
+	d := &desktop{cfg: &config.Config{PortfolioLoadTimeoutSeconds: 180}}
+	if got := d.portfolioRefreshTimeout(); got != 180*time.Second {
+		t.Fatalf("default portfolio timeout = %s, want 180s", got)
+	}
+	d.cfg.PortfolioLoadTimeoutSeconds = 5
+	if got := d.portfolioRefreshTimeout(); got != 5*time.Second {
+		t.Fatalf("configured portfolio timeout = %s, want 5s", got)
+	}
+}
+
 func TestInstrumentLoadTimeoutSaveNormalizesInvalidInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	for _, input := range []string{"", "abc", "0", "-1"} {
@@ -248,7 +261,7 @@ func TestInstrumentLoadTimeoutRoundTripIsApplied(t *testing.T) {
 func TestFreshInstrumentCacheUsesImmediateLocalPath(t *testing.T) {
 	called := make(chan bool, 1)
 	d := &desktop{
-		cfg:   &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
+		cfg:    &config.Config{Mode: "sandbox", CatalogTTLHours: 24},
 		scache: &catalog.SegmentedCache{Mode: "sandbox", Bond: &catalog.Segment{UpdatedAt: time.Now(), Instruments: []catalog.Instrument{{UID: "bond"}}}},
 		loadInstruments: func(force bool) {
 			called <- force
@@ -392,4 +405,53 @@ func TestTranslationFilesHaveSameKeys(t *testing.T) {
 			t.Errorf("missing ru key %s", k)
 		}
 	}
+}
+
+func TestTranslationFilesContainAllTrKeys(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make(map[string]bool)
+	for _, match := range regexp.MustCompile(`(?:d|g|c)\.tr\("([^"]+)"\)`).FindAllSubmatch(source, -1) {
+		keys[string(match[1])] = true
+	}
+	for _, key := range dynamicTrKeys() {
+		keys[key] = true
+	}
+	for _, lang := range []string{"ru", "en"} {
+		data, err := translations.ReadFile("i18n/" + lang + ".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dictionary map[string]string
+		if err := json.Unmarshal(data, &dictionary); err != nil {
+			t.Fatal(err)
+		}
+		for key := range keys {
+			if dictionary[key] == "" {
+				t.Errorf("%s: missing translation for %s", lang, key)
+			}
+		}
+	}
+}
+
+// dynamicTrKeys mirrors the finite key spaces constructed by main.go. Keeping
+// these sets tied to the same field/type/month declarations makes a missing
+// dictionary entry fail even when tr receives a computed string.
+func dynamicTrKeys() []string {
+	keys := []string{"portfolio_load_timeout_error", "instrument_load_timeout_error"}
+	for _, typ := range instrumentTypes {
+		keys = append(keys, "type_"+typ)
+	}
+	for _, fields := range [][]string{portfolioFields, operationFields, instrumentFields} {
+		for _, field := range fields {
+			keys = append(keys, "col_"+field)
+		}
+	}
+	keys = append(keys, monthKeys...)
+	for _, level := range []string{"low", "moderate", "high", "unspecified"} {
+		keys = append(keys, "risk_"+level)
+	}
+	return keys
 }
