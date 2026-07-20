@@ -34,6 +34,17 @@ func TestTypedComparisonParsesMoneyAndCalendarDate(t *testing.T) {
 	}
 }
 
+func TestExplicitEmptyValueFiltersRows(t *testing.T) {
+	columns := []string{"Text"}
+	rows := [][]string{{""}, {"value"}}
+	if got := filterRows(rows, columns, []filterCondition{{"Text", "=", emptyFilterValue}}, -1); len(got) != 1 || got[0][0] != "" {
+		t.Fatalf("empty equality = %#v", got)
+	}
+	if got := filterRows(rows, columns, []filterCondition{{"Text", "!=", emptyFilterValue}}, -1); len(got) != 1 || got[0][0] != "value" {
+		t.Fatalf("empty inequality = %#v", got)
+	}
+}
+
 func TestDynamicFilterValuesExcludeOwnCondition(t *testing.T) {
 	columns := []string{"A", "B"}
 	rows := [][]string{{"x", "one"}, {"x", "two"}, {"y", "two"}}

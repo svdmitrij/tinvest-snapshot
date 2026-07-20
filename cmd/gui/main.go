@@ -109,6 +109,7 @@ type dynamicFilterRow struct {
 	value     *widget.SelectEntry
 	boolean   *widget.Select
 	valueBox  *fyne.Container
+	valueSet  bool
 }
 
 // resolveConfigPath finds or creates the config file. The resolution order is:
@@ -644,7 +645,7 @@ func (g *grid) addFilterRow() {
 	r.valueBox.Add(r.value)
 	r.column.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.operation.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
-	r.value.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
+	r.value.OnChanged = func(string) { r.valueSet = true; g.updateDynamicFilters(); g.apply() }
 	r.boolean.OnChanged = func(string) { g.apply() }
 	plus := widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() })
 	remove := widget.NewButton("x", func() { g.removeFilterRow(r) })
@@ -678,6 +679,9 @@ func (g *grid) conditions() []filterCondition {
 	out := make([]filterCondition, len(g.filters))
 	for i, r := range g.filters {
 		value := r.value.Text
+		if value == "" && r.valueSet {
+			value = emptyFilterValue
+		}
 		if columnType(g.columns, r.column.Selected) == boolColumn {
 			value = r.boolean.Selected
 		}

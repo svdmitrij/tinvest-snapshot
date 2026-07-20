@@ -10,6 +10,8 @@ import (
 
 type filterCondition struct{ Column, Operation, Value string }
 
+const emptyFilterValue = "\x00"
+
 type columnKind int
 
 const (
@@ -32,7 +34,7 @@ func columnType(columns []string, name string) columnKind {
 	// Table captions are localized, so known semantic columns are matched by
 	// their translations at the grid boundary rather than guessed from values.
 	lower := strings.ToLower(name)
-	if strings.Contains(lower, "квал") || strings.Contains(lower, "qual") || strings.Contains(lower, "дивиденд") || strings.Contains(lower, "dividend") {
+	if strings.Contains(lower, "квал") || strings.Contains(lower, "qual") {
 		return boolColumn
 	}
 	if strings.Contains(lower, "дата") || strings.Contains(lower, "date") || strings.Contains(lower, "время") || strings.Contains(lower, "time") || strings.Contains(lower, "погаш") || strings.Contains(lower, "maturity") {
@@ -122,7 +124,11 @@ func matchesCondition(row []string, columns []string, condition filterCondition)
 	if i < 0 || i >= len(row) {
 		return true
 	}
-	cmp := compareValues(row[i], condition.Value, columnType(columns, condition.Column))
+	value := condition.Value
+	if value == emptyFilterValue {
+		value = ""
+	}
+	cmp := compareValues(row[i], value, columnType(columns, condition.Column))
 	switch condition.Operation {
 	case "=":
 		return cmp == 0
@@ -134,13 +140,6 @@ func matchesCondition(row []string, columns []string, condition filterCondition)
 		return cmp <= 0
 	}
 	return true
-}
-
-func legacyCompareValues(left, right string) int {
-	if left < right {
-		return -1
-	}
-	return 1
 }
 
 func filterRows(rows [][]string, columns []string, conditions []filterCondition, skip int) [][]string {
