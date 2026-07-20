@@ -407,12 +407,18 @@ func TestTranslationFilesHaveSameKeys(t *testing.T) {
 	}
 }
 
-func TestTranslationFilesContainLiteralTrKeys(t *testing.T) {
+func TestTranslationFilesContainAllTrKeys(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := regexp.MustCompile(`(?:d|g|c)\.tr\("([^"]+)"\)`).FindAllSubmatch(source, -1)
+	keys := make(map[string]bool)
+	for _, match := range regexp.MustCompile(`(?:d|g|c)\.tr\("([^"]+)"\)`).FindAllSubmatch(source, -1) {
+		keys[string(match[1])] = true
+	}
+	for _, key := range dynamicTrKeys() {
+		keys[key] = true
+	}
 	for _, lang := range []string{"ru", "en"} {
 		data, err := translations.ReadFile("i18n/" + lang + ".json")
 		if err != nil {
@@ -422,11 +428,30 @@ func TestTranslationFilesContainLiteralTrKeys(t *testing.T) {
 		if err := json.Unmarshal(data, &dictionary); err != nil {
 			t.Fatal(err)
 		}
-		for _, match := range keys {
-			key := string(match[1])
+		for key := range keys {
 			if dictionary[key] == "" {
 				t.Errorf("%s: missing translation for %s", lang, key)
 			}
 		}
 	}
+}
+
+// dynamicTrKeys mirrors the finite key spaces constructed by main.go. Keeping
+// these sets tied to the same field/type/month declarations makes a missing
+// dictionary entry fail even when tr receives a computed string.
+func dynamicTrKeys() []string {
+	keys := []string{"portfolio_load_timeout_error", "instrument_load_timeout_error"}
+	for _, typ := range instrumentTypes {
+		keys = append(keys, "type_"+typ)
+	}
+	for _, fields := range [][]string{portfolioFields, operationFields, instrumentFields} {
+		for _, field := range fields {
+			keys = append(keys, "col_"+field)
+		}
+	}
+	keys = append(keys, monthKeys...)
+	for _, level := range []string{"low", "moderate", "high", "unspecified"} {
+		keys = append(keys, "risk_"+level)
+	}
+	return keys
 }
