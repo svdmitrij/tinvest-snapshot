@@ -474,6 +474,10 @@ type tableCell struct {
 	onTap      func()
 }
 
+func dynamicRowHeight() float32 {
+	return widget.NewButton("", nil).MinSize().Height
+}
+
 func newTableCell(tr func(string) string) *tableCell {
 	c := &tableCell{tr: tr}
 	c.background = canvas.NewRectangle(zebraOdd)
@@ -484,7 +488,9 @@ func newTableCell(tr func(string) string) *tableCell {
 }
 
 func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text))
+	minHeight := canvas.NewRectangle(color.Transparent)
+	minHeight.SetMinSize(fyne.NewSize(1, dynamicRowHeight()))
+	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text, minHeight))
 }
 
 func (c *tableCell) set(value string, key string, even bool, fontScale float32) {
@@ -528,7 +534,7 @@ func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 
 func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *grid {
 	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr, fontScale: fontScale}
-	g.filterRowHeight = widget.NewButton("", nil).MinSize().Height
+	g.filterRowHeight = dynamicRowHeight()
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
@@ -578,7 +584,6 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 		}
 	})
 	g.table.ShowHeaderRow = true
-	g.table.SetRowHeight(-1, g.filterRowHeight)
 	g.table.CreateHeader = func() fyne.CanvasObject {
 		return newHeaderCell(float32(g.fontScale) / 100.0)
 	}

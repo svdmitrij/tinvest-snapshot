@@ -187,9 +187,10 @@ func TestFilterPanelHasBorderAndMatchesTableRowHeight(t *testing.T) {
 	if !ok || border.StrokeWidth < 2 || border.StrokeColor == nil {
 		t.Fatalf("filter border = %#v, want visible rectangle", g.filterPanel.Objects[0])
 	}
-	rowHeight := g.filterBox.Objects[0].Size().Height
-	if delta := rowHeight - g.filterRowHeight; delta < -2 || delta > 2 {
-		t.Fatalf("filter row height = %v, table row height = %v", rowHeight, g.filterRowHeight)
+	filterHeight := g.filterBox.Objects[0].Size().Height
+	tableHeight := newTableCell(d.tr).MinSize().Height
+	if delta := filterHeight - tableHeight; delta < -2 || delta > 2 {
+		t.Fatalf("filter row height = %v, table row height = %v", filterHeight, tableHeight)
 	}
 }
 
