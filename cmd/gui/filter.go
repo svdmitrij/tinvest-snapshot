@@ -85,35 +85,57 @@ func compareValues(left, right string, kind columnKind) int {
 	}
 	if kind == dateColumn {
 		left, right = left[:min(10, len(left))], right[:min(10, len(right))]
-		if l, e := time.Parse("2006-01-02", left); e == nil {
-			if r, e := time.Parse("2006-01-02", right); e == nil {
-				if l.Before(r) {
-					return -1
-				}
-				if l.After(r) {
-					return 1
-				}
-				return 0
-			}
+		l, leftErr := time.Parse("2006-01-02", left)
+		r, rightErr := time.Parse("2006-01-02", right)
+		leftOK, rightOK := leftErr == nil, rightErr == nil
+		if !leftOK || !rightOK {
+			return compareTypedValues(left, leftOK, right, rightOK)
 		}
+		if l.Before(r) {
+			return -1
+		}
+		if l.After(r) {
+			return 1
+		}
+		return 0
 	}
 	if kind == numberColumn {
-		if l, ok := numericValue(left); ok {
-			if r, ok := numericValue(right); ok {
-				if l < r {
-					return -1
-				}
-				if l > r {
-					return 1
-				}
-				return 0
-			}
+		l, leftOK := numericValue(left)
+		r, rightOK := numericValue(right)
+		if !leftOK || !rightOK {
+			return compareTypedValues(left, leftOK, right, rightOK)
 		}
+		if l < r {
+			return -1
+		}
+		if l > r {
+			return 1
+		}
+		return 0
 	}
 	if left < right {
 		return -1
 	}
 	return 1
+}
+
+// compareTypedValues puts data that cannot be parsed for its typed column
+// below a present value. If both values are unparseable, preserve exact text
+// ordering for equality and inequality filters.
+func compareTypedValues(left string, leftOK bool, right string, rightOK bool) int {
+	if leftOK != rightOK {
+		if leftOK {
+			return 1
+		}
+		return -1
+	}
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 func matchesCondition(row []string, columns []string, condition filterCondition) bool {

@@ -17,6 +17,16 @@ import (
 	"github.com/dmitry/tinvest-snapshot/internal/config"
 )
 
+func buttonLabels(row *fyne.Container) []string {
+	labels := []string{}
+	for _, object := range row.Objects {
+		if button, ok := object.(*widget.Button); ok {
+			labels = append(labels, button.Text)
+		}
+	}
+	return labels
+}
+
 func testDesktop() *desktop {
 	d := &desktop{cfg: &config.Config{Language: "ru"}}
 	d.loadText()
@@ -122,6 +132,64 @@ func TestFilterRowIsCompactSingleLine(t *testing.T) {
 	fixed, ok := op.Layout.(*fixedWidthLayout)
 	if !ok || fixed.width != filterOperationWidth {
 		t.Fatalf("operation layout = %#v, want fixed width %v", op.Layout, filterOperationWidth)
+	}
+}
+
+func TestFilterRowsAreRenderedOnceAndOnlyLastHasAddButton(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+
+	for cycle := 0; cycle < 3; cycle++ {
+		g.removeFilterRow(g.filters[0])
+		if len(g.filters) != 1 || len(g.filterBox.Objects) != 1 {
+			t.Fatalf("cycle %d: filters=%d rendered=%d, want one", cycle, len(g.filters), len(g.filterBox.Objects))
+		}
+		g.addFilterRow()
+		g.addFilterRow()
+		if len(g.filterBox.Objects) != 3 {
+			t.Fatalf("cycle %d: rendered rows=%d, want 3", cycle, len(g.filterBox.Objects))
+		}
+		for i, object := range g.filterBox.Objects {
+			row := object.(*fyne.Container)
+			buttons := buttonLabels(row)
+			if i == len(g.filterBox.Objects)-1 {
+				if len(buttons) != 2 || buttons[0] != "+" || buttons[1] != "x" {
+					t.Fatalf("last row buttons = %#v, want [+ x]", buttons)
+				}
+			} else if len(buttons) != 1 || buttons[0] != "x" {
+				t.Fatalf("row %d buttons = %#v, want [x]", i, buttons)
+			}
+		}
+		for len(g.filters) > 1 {
+			g.removeFilterRow(g.filters[len(g.filters)-1])
+		}
+	}
+}
+
+func TestFilterPanelHasBorderAndMatchesTableRowHeight(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+	w.SetContent(g.root)
+	w.Resize(fyne.NewSize(1200, 800))
+
+	if len(g.filterPanel.Objects) != 2 {
+		t.Fatalf("filter panel objects = %d, want border and content", len(g.filterPanel.Objects))
+	}
+	border, ok := g.filterPanel.Objects[0].(*canvas.Rectangle)
+	if !ok || border.StrokeWidth < 2 || border.StrokeColor == nil {
+		t.Fatalf("filter border = %#v, want visible rectangle", g.filterPanel.Objects[0])
+	}
+	rowHeight := g.filterBox.Objects[0].Size().Height
+	if delta := rowHeight - g.filterRowHeight; delta < -2 || delta > 2 {
+		t.Fatalf("filter row height = %v, table row height = %v", rowHeight, g.filterRowHeight)
 	}
 }
 

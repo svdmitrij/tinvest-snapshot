@@ -34,6 +34,30 @@ func TestTypedComparisonParsesMoneyAndCalendarDate(t *testing.T) {
 	}
 }
 
+func TestTypedFiltersTreatUnparseableValuesAsMissing(t *testing.T) {
+	for _, missing := range []string{"н/д", "n/a", "not a date"} {
+		t.Run(missing, func(t *testing.T) {
+			dateColumns := []string{"Дата купона"}
+			dateRows := [][]string{{"2026-01-01"}, {missing}, {"2026-12-31"}}
+			if got := filterRows(dateRows, dateColumns, []filterCondition{{"Дата купона", ">=", "2026-06-01"}}, -1); len(got) != 1 || got[0][0] != "2026-12-31" {
+				t.Fatalf("date >= result = %#v", got)
+			}
+			if got := filterRows(dateRows, dateColumns, []filterCondition{{"Дата купона", "<=", "2026-06-01"}}, -1); len(got) != 2 || got[0][0] != "2026-01-01" || got[1][0] != missing {
+				t.Fatalf("date <= result = %#v", got)
+			}
+
+			numberColumns := []string{"Стоимость"}
+			numberRows := [][]string{{"10"}, {missing}, {"100"}}
+			if got := filterRows(numberRows, numberColumns, []filterCondition{{"Стоимость", ">=", "50"}}, -1); len(got) != 1 || got[0][0] != "100" {
+				t.Fatalf("number >= result = %#v", got)
+			}
+			if got := filterRows(numberRows, numberColumns, []filterCondition{{"Стоимость", "<=", "50"}}, -1); len(got) != 2 || got[0][0] != "10" || got[1][0] != missing {
+				t.Fatalf("number <= result = %#v", got)
+			}
+		})
+	}
+}
+
 func TestExplicitEmptyValueFiltersRows(t *testing.T) {
 	columns := []string{"Text"}
 	rows := [][]string{{""}, {"value"}}
