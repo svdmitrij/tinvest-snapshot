@@ -3,14 +3,20 @@
 package main
 
 import (
+	"bytes"
 	"image/color"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	desktopdriver "fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -45,6 +51,52 @@ func labelCount(o fyne.CanvasObject) int {
 		return n
 	}
 	return 0
+}
+
+func assertSearchControl(t *testing.T, g *grid, sample, tooltip string) {
+	t.Helper()
+	block, ok := g.searchBlock.(*fyne.Container)
+	if !ok || len(block.Objects) != 2 {
+		t.Fatalf("search block = %T with %d objects, want field and icon button", g.searchBlock, len(block.Objects))
+	}
+	field, ok := block.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("search field wrapper = %T, want fixed-width container", block.Objects[0])
+	}
+	fixed, ok := field.Layout.(*fixedWidthLayout)
+	if !ok || fixed.width < searchFieldWidth() {
+		t.Fatalf("search field width = %#v, want at least %v", field.Layout, searchFieldWidth())
+	}
+	if g.findNextButton.Text != "" || g.findNextButton.Icon == nil || g.findNextButton.Icon.Name() != theme.SearchIcon().Name() {
+		t.Fatalf("find-next button = text %q, icon %v, want icon-only search button", g.findNextButton.Text, g.findNextButton.Icon)
+	}
+	if size := g.findNextButton.MinSize(); size.Width != size.Height {
+		t.Fatalf("find-next button min size = %v, want standard square icon button", size)
+	}
+	if g.findNextButton.tooltip != tooltip {
+		t.Fatalf("find-next tooltip = %q, want %q", g.findNextButton.tooltip, tooltip)
+	}
+	g.search.SetText(sample)
+	if g.search.Text != sample {
+		t.Fatalf("search text = %q, want all 20 characters", g.search.Text)
+	}
+}
+
+func TestTooltipButtonShowsLocalizedDescription(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	b := newTooltipButton(theme.SearchIcon(), "Find next", func() {})
+	w.SetContent(b)
+	b.MouseIn(&desktopdriver.MouseEvent{})
+	if b.popup == nil || !b.popup.Visible() {
+		t.Fatal("tooltip must be visible while the pointer is over the icon button")
+	}
+	b.MouseOut()
+	if b.popup != nil {
+		t.Fatal("tooltip must close when the pointer leaves the icon button")
+	}
 }
 
 func snapshot(t *testing.T, w fyne.Window, name string) {
@@ -94,6 +146,413 @@ func TestFlowLayoutWrapsOnlyWhenRowIsFull(t *testing.T) {
 	wide := &flowLayout{widthFn: func() float32 { return 3*blockWidth + 2*pad + 10 + flowWidthAllowance }}
 	if got := wide.MinSize(blocks).Height; got != blockHeight {
 		t.Fatalf("single line min height = %v, want %v", got, blockHeight)
+	}
+}
+
+func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
+	for _, language := range []string{"ru", "en"} {
+		t.Run(language, func(t *testing.T) {
+			a := test.NewApp()
+			defer a.Quit()
+			w := test.NewWindow(nil)
+			defer w.Close()
+			d := &desktop{cfg: &config.Config{Language: language, FontScaleInstruments: 100}, window: w}
+			d.loadText()
+			d.instruments = newGrid(w, d.tr, d, 100)
+			if language == "ru" {
+				assertSearchControl(t, d.instruments, searchSampleRU, "Найти далее")
+			} else {
+				assertSearchControl(t, d.instruments, searchSampleEN, "Find next")
+			}
+			tab := d.instrumentTab()
+			w.SetContent(tab)
+			w.Resize(fyne.NewSize(1600, 900))
+
+			top, ok := tab.(*fyne.Container).Objects[1].(*fyne.Container)
+			if !ok {
+				t.Fatalf("toolbar parent type = %T, want container", tab.(*fyne.Container).Objects[1])
+			}
+			toolbar, ok := top.Objects[0].(*fyne.Container)
+			if !ok {
+				t.Fatalf("toolbar type = %T, want container", top.Objects[0])
+			}
+			if _, ok := toolbar.Layout.(*flowLayout); !ok {
+				t.Fatalf("toolbar layout = %T, want flowLayout", toolbar.Layout)
+			}
+			if len(toolbar.Objects) != 6 {
+				t.Fatalf("toolbar blocks = %d, want refresh, export, scale, search, group, reset", len(toolbar.Objects))
+			}
+			if got := toolbar.Objects[0].(*widget.Button).Text; got != d.tr("refresh") {
+				t.Fatalf("first toolbar block = %q, want %q", got, d.tr("refresh"))
+			}
+			if got := toolbar.Objects[1].(*widget.Button).Text; got != d.tr("export") {
+				t.Fatalf("second toolbar block = %q, want %q", got, d.tr("export"))
+			}
+			if got := toolbar.Objects[5].(*widget.Button).Text; got != d.tr("reset_all") {
+				t.Fatalf("last toolbar block = %q, want %q", got, d.tr("reset_all"))
+			}
+			for i, block := range toolbar.Objects[1:] {
+				if block.Position().Y != toolbar.Objects[0].Position().Y {
+					t.Fatalf("wide toolbar block %d wrapped unexpectedly", i+1)
+				}
+			}
+
+			w.Resize(fyne.NewSize(640, 480))
+			lastY := toolbar.Objects[0].Position().Y
+			for i, block := range toolbar.Objects {
+				if block.Position().Y < lastY {
+					t.Fatalf("toolbar block %d moved before its predecessor", i)
+				}
+				if edge := block.Position().X + block.Size().Width; edge > toolbar.Size().Width+0.5 {
+					t.Fatalf("toolbar block %d overflows: right edge %v > width %v", i, edge, toolbar.Size().Width)
+				}
+				lastY = block.Position().Y
+			}
+
+			w.Resize(fyne.NewSize(300, 480))
+			wrapped := false
+			for _, block := range toolbar.Objects {
+				if block.Position().Y > toolbar.Objects[0].Position().Y {
+					wrapped = true
+				}
+			}
+			if !wrapped {
+				t.Fatal("toolbar must wrap when the available width is exhausted")
+			}
+		})
+	}
+}
+
+func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
+	for _, language := range []string{"ru", "en"} {
+		t.Run(language, func(t *testing.T) {
+			groupPlaceholder, fromPlaceholder, toPlaceholder := "Группировать по", "Период с", "Период по"
+			if language == "en" {
+				groupPlaceholder, fromPlaceholder, toPlaceholder = "Group by", "Period from", "Period to"
+			}
+			a := test.NewApp()
+			defer a.Quit()
+			w := test.NewWindow(nil)
+			defer w.Close()
+			d := &desktop{cfg: &config.Config{Language: language, FontScalePortfolio: 100, FontScaleOperations: 100}, window: w}
+			d.loadText()
+			portfolio := newGrid(w, d.tr, d, 100)
+			operations := newGrid(w, d.tr, d, 100)
+			d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+			d.from.SetPlaceHolder(d.tr("from"))
+			d.to.SetPlaceHolder(d.tr("to"))
+
+			portfolioBar := d.tableBar(portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {}, portfolio.reset)
+			operationsBar := d.tableBar(operations, &d.cfg.FontScaleOperations, func() {}, func() {}, operations.reset,
+				container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
+			for name, bar := range map[string]*fyne.Container{"portfolio": portfolioBar, "operations": operationsBar} {
+				if _, ok := bar.Layout.(*flowLayout); !ok {
+					t.Fatalf("%s bar layout = %T, want flowLayout", name, bar.Layout)
+				}
+				if got := bar.Objects[len(bar.Objects)-1].(*widget.Button).Text; got != d.tr("reset_all") {
+					t.Fatalf("%s reset button = %q, want %q", name, got, d.tr("reset_all"))
+				}
+				bar.Resize(fyne.NewSize(1600, 200))
+				firstY := bar.Objects[0].Position().Y
+				for i, block := range bar.Objects {
+					if block.Position().Y != firstY {
+						t.Fatalf("%s block %d wrapped on a wide panel", name, i)
+					}
+				}
+				bar.Resize(fyne.NewSize(640, 480))
+				for i, block := range bar.Objects {
+					if edge := block.Position().X + block.Size().Width; edge > bar.Size().Width+0.5 {
+						t.Fatalf("%s block %d overflows at 640px", name, i)
+					}
+				}
+			}
+
+			for name, g := range map[string]*grid{"portfolio": portfolio, "operations": operations} {
+				sample := searchSampleRU
+				tooltip := "Найти далее"
+				if language == "en" {
+					sample = searchSampleEN
+					tooltip = "Find next"
+				}
+				assertSearchControl(t, g, sample, tooltip)
+				if g.search.PlaceHolder != d.tr("search") {
+					t.Fatalf("%s search placeholder = %q, want %q", name, g.search.PlaceHolder, d.tr("search"))
+				}
+				if g.group.PlaceHolder != groupPlaceholder {
+					t.Fatalf("%s group placeholder = %q, want %q", name, g.group.PlaceHolder, groupPlaceholder)
+				}
+				if labelCount(g.searchBlock) != 0 || labelCount(g.groupBlock) != 0 {
+					t.Fatalf("%s toolbar contains an external search or group label", name)
+				}
+				g.group.Options = []string{"", "Name"}
+				g.group.SetSelected("Name")
+				if g.group.Selected != "Name" {
+					t.Fatalf("%s group selection was not retained", name)
+				}
+				g.group.ClearSelected()
+				if g.group.Selected != "" {
+					t.Fatalf("%s group selection was not cleared", name)
+				}
+			}
+
+			if d.from.PlaceHolder != fromPlaceholder || d.to.PlaceHolder != toPlaceholder {
+				t.Fatalf("date placeholders = %q, %q, want %q, %q", d.from.PlaceHolder, d.to.PlaceHolder, fromPlaceholder, toPlaceholder)
+			}
+			selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+			d.from.SetDate(&selected)
+			d.to.SetDate(&selected)
+			if d.from.Text == "" || d.to.Text == "" {
+				t.Fatal("selected dates must replace their placeholders")
+			}
+			d.from.SetDate(nil)
+			d.to.SetDate(nil)
+			if d.from.Text != "" || d.to.Text != "" {
+				t.Fatal("cleared dates must restore their placeholders")
+			}
+		})
+	}
+}
+
+func TestGridResetRestoresCurrentTabView(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+	g.set([]string{"Name", "Kind"}, [][]string{{"Alpha", "A"}, {"Beta", "B"}, {"Gamma", "A"}})
+	g.group.SetSelected("Kind")
+	g.collapsed["Kind: A"] = true
+	g.search.SetText("Alpha")
+	g.matchIndex = 1
+	row := g.filters[0]
+	row.column.SetSelected("Kind")
+	row.operation.SetSelected("=")
+	row.value.SetText("A")
+	g.addFilterRow()
+
+	g.reset()
+	if g.search.Text != "" || g.group.Selected != "" || g.matchIndex != -1 || len(g.collapsed) != 0 {
+		t.Fatal("reset must clear search, grouping, navigation, and collapsed groups")
+	}
+	if len(g.filters) != 1 || g.filters[0].column.Selected != "" || g.filters[0].operation.Selected != "" || g.filters[0].value.Text != "" {
+		t.Fatal("reset must leave exactly one empty filter row")
+	}
+	if len(g.visible) != len(g.all) {
+		t.Fatalf("reset visible rows = %d, want %d", len(g.visible), len(g.all))
+	}
+
+	g.reset()
+	if len(g.visible) != len(g.all) || len(g.filters) != 1 {
+		t.Fatal("repeated reset must keep the neutral view unchanged")
+	}
+}
+
+func TestEmptySearchButtonClearsNavigation(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+	g.set([]string{"Name"}, [][]string{{"Alpha"}, {"Beta"}})
+	g.search.SetText("Alpha")
+	g.findNext()
+	g.search.SetText("")
+	g.findNextButton.OnTapped()
+	if g.matchIndex != -1 || g.navigating {
+		t.Fatal("empty search action must clear navigation state")
+	}
+	if len(g.visible) != len(g.all) {
+		t.Fatalf("empty search visible rows = %d, want full view %d", len(g.visible), len(g.all))
+	}
+}
+
+func resetButton(t *testing.T, bar *fyne.Container) *widget.Button {
+	t.Helper()
+	button, ok := bar.Objects[len(bar.Objects)-1].(*widget.Button)
+	if !ok {
+		t.Fatalf("last toolbar object = %T, want reset button", bar.Objects[len(bar.Objects)-1])
+	}
+	return button
+}
+
+func instrumentToolbar(t *testing.T, tab fyne.CanvasObject) *fyne.Container {
+	t.Helper()
+	root, ok := tab.(*fyne.Container)
+	if !ok || len(root.Objects) < 2 {
+		t.Fatalf("instrument tab = %T, want border container with top toolbar", tab)
+	}
+	top, ok := root.Objects[1].(*fyne.Container)
+	if !ok || len(top.Objects) == 0 {
+		t.Fatalf("instrument toolbar parent = %T, want non-empty container", root.Objects[1])
+	}
+	bar, ok := top.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("instrument toolbar = %T, want container", top.Objects[0])
+	}
+	return bar
+}
+
+func TestActualResetCallbacksStayLocalAndIsolated(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	d := &desktop{cfg: &config.Config{Language: "ru", FontScalePortfolio: 100, FontScaleOperations: 100, FontScaleInstruments: 100}, window: w}
+	d.loadText()
+	d.portfolio = newGrid(w, d.tr, d, 100)
+	d.operations = newGrid(w, d.tr, d, 100)
+	d.instruments = newGrid(w, d.tr, d, 100)
+	for _, g := range []*grid{d.portfolio, d.operations, d.instruments} {
+		g.set([]string{"Name"}, [][]string{{"Alpha"}, {"Beta"}})
+	}
+	d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+	selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+	d.from.SetDate(&selected)
+	d.to.SetDate(&selected)
+	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {}, d.portfolio.reset)
+	operationsBar := d.operationsBar()
+	instrumentsBar := instrumentToolbar(t, d.instrumentTab())
+
+	d.portfolio.search.SetText("Alpha")
+	d.operations.search.SetText("Beta")
+	d.instruments.search.SetText("Alpha")
+	resetButton(t, portfolioBar).OnTapped()
+	if d.portfolio.search.Text != "" || d.operations.search.Text != "Beta" || d.instruments.search.Text != "Alpha" {
+		t.Fatal("portfolio reset must not change other tab state")
+	}
+	if d.from.Date == nil || d.to.Date == nil {
+		t.Fatal("portfolio reset must not clear operation period")
+	}
+
+	resetButton(t, operationsBar).OnTapped()
+	if d.operations.search.Text != "" || d.from.Date != nil || d.to.Date != nil {
+		t.Fatal("operations reset must clear only its view and period")
+	}
+	if d.instruments.search.Text != "Alpha" {
+		t.Fatal("operations reset must not change instrument state")
+	}
+
+	resetButton(t, instrumentsBar).OnTapped()
+	if d.instruments.search.Text != "" {
+		t.Fatalf("instrument reset search = %q, want empty", d.instruments.search.Text)
+	}
+	resetButton(t, instrumentsBar).OnTapped()
+	if d.instruments.search.Text != "" {
+		t.Fatal("repeated instrument reset must preserve the neutral view")
+	}
+}
+
+func TestActualInstrumentResetSuppressesLoadEnrichmentAndCacheWrite(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	d := &desktop{cfg: &config.Config{Language: "ru", FontScaleInstruments: 100}, window: w}
+	d.loadText()
+	d.instruments = newGrid(w, d.tr, d, 100)
+	d.cachePath = filepath.Join(t.TempDir(), "catalog.json")
+	cacheBefore := []byte("catalog cache must remain untouched")
+	if err := os.WriteFile(d.cachePath, cacheBefore, 0o600); err != nil {
+		t.Fatalf("write catalog cache fixture: %v", err)
+	}
+	bar := instrumentToolbar(t, d.instrumentTab())
+	if got := len(d.instrumentFilterSelects); got != 13 {
+		t.Fatalf("instrument filter controls = %d, want 13", got)
+	}
+
+	loadCalls, enrichmentAttempts, cacheWriteAttempts := 0, 0, 0
+	d.loadInstruments = func(force bool) {
+		loadCalls++
+		if !force {
+			enrichmentAttempts++
+			cacheWriteAttempts++
+		}
+	}
+	d.instrumentFilterSelects[0].SetSelected(d.tr("type_share"))
+	if loadCalls != 1 {
+		t.Fatalf("real instrument selector callback loads = %d, want 1", loadCalls)
+	}
+	loadCalls, enrichmentAttempts, cacheWriteAttempts = 0, 0, 0
+
+	resetButton(t, bar).OnTapped()
+	if loadCalls != 0 || enrichmentAttempts != 0 || cacheWriteAttempts != 0 {
+		t.Fatalf("instrument reset side effects: loads=%d enrichment=%d cache=%d, want zero", loadCalls, enrichmentAttempts, cacheWriteAttempts)
+	}
+	if d.instrumentFilterSelects[0].Selected != d.tr("all") {
+		t.Fatalf("instrument type after reset = %q, want %q", d.instrumentFilterSelects[0].Selected, d.tr("all"))
+	}
+	cacheAfter, err := os.ReadFile(d.cachePath)
+	if err != nil {
+		t.Fatalf("read catalog cache fixture: %v", err)
+	}
+	if !bytes.Equal(cacheAfter, cacheBefore) {
+		t.Fatal("instrument reset must not modify the catalog cache")
+	}
+
+	resetButton(t, bar).OnTapped()
+	if loadCalls != 0 || enrichmentAttempts != 0 || cacheWriteAttempts != 0 {
+		t.Fatalf("repeated instrument reset side effects: loads=%d enrichment=%d cache=%d, want zero", loadCalls, enrichmentAttempts, cacheWriteAttempts)
+	}
+}
+
+func TestActualOperationsResetDoesNotScheduleNetworkOrModifyCache(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	requestStarted := make(chan struct{}, 1)
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		<-releaseRequest
+	}))
+	defer server.Close()
+	defer close(releaseRequest)
+	d := &desktop{cfg: &config.Config{Language: "ru", Token: "test", Endpoint: server.URL, ReportsDir: t.TempDir(), FontScaleOperations: 100}, window: w, status: widget.NewLabel("")}
+	d.loadText()
+	d.operations = newGrid(w, d.tr, d, 100)
+	d.instruments = newGrid(w, d.tr, d, 100)
+	d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+	d.operationsCachePath = filepath.Join(t.TempDir(), "operations.json")
+	cacheBefore := []byte("operations cache must remain untouched")
+	if err := os.WriteFile(d.operationsCachePath, cacheBefore, 0o600); err != nil {
+		t.Fatalf("write operations cache fixture: %v", err)
+	}
+	selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+	d.from.SetDate(&selected)
+	d.to.SetDate(&selected)
+	d.operations.search.SetText("Alpha")
+	d.instruments.search.SetText("Beta")
+
+	resetButton(t, d.operationsBar()).OnTapped()
+	if d.from.Date != nil || d.to.Date != nil || d.operations.search.Text != "" {
+		t.Fatal("operations reset must clear only its local period and view")
+	}
+	if d.instruments.search.Text != "Beta" {
+		t.Fatal("operations reset must not modify the instruments tab")
+	}
+	d.refreshMu.Lock()
+	_, refreshing := d.refreshing["operations"]
+	d.refreshMu.Unlock()
+	if refreshing {
+		t.Fatal("operations reset must not schedule a network refresh")
+	}
+	select {
+	case <-requestStarted:
+		t.Fatal("operations reset must not issue an API request")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cacheAfter, err := os.ReadFile(d.operationsCachePath)
+	if err != nil {
+		t.Fatalf("read operations cache fixture: %v", err)
+	}
+	if !bytes.Equal(cacheAfter, cacheBefore) {
+		t.Fatal("operations reset must not modify the operations cache")
 	}
 }
 

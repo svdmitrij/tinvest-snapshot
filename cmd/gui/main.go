@@ -28,7 +28,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
+	desktopdriver "fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -62,6 +62,7 @@ type desktop struct {
 	portfolioVisited, operationsVisited, instrumentsVisited        bool
 	loadInstruments                                                func(bool)
 	resetInstrumentFilters                                         func()
+	instrumentFilterSelects                                        []*widget.Select
 	refreshMu                                                      sync.Mutex
 	refreshing                                                     map[string]string
 }
@@ -83,26 +84,28 @@ func (d *desktop) dividendLoadTimeout() time.Duration {
 }
 
 type grid struct {
-	mu                     sync.RWMutex
-	window                 fyne.Window
-	columns                []string
-	all, visible, dataView [][]string
-	table                  *widget.Table
-	header, root           *fyne.Container
-	search                 *widget.Entry
-	filters                []*dynamicFilterRow
-	filterBox              *fyne.Container
-	filterPanel            *fyne.Container
-	filterRowHeight        float32
-	matchIndex             int
-	navigating             bool
-	group                  *widget.Select
-	sortColumn             int
-	desc                   bool
-	collapsed              map[string]bool
-	onRow                  func([]string)
-	tr                     func(string) string
-	fontScale              int // percent (60–200), default 100
+	mu                      sync.RWMutex
+	window                  fyne.Window
+	columns                 []string
+	all, visible, dataView  [][]string
+	table                   *widget.Table
+	header, root            *fyne.Container
+	search                  *widget.Entry
+	findNextButton          *tooltipButton
+	searchBlock, groupBlock fyne.CanvasObject
+	filters                 []*dynamicFilterRow
+	filterBox               *fyne.Container
+	filterPanel             *fyne.Container
+	filterRowHeight         float32
+	matchIndex              int
+	navigating              bool
+	group                   *widget.Select
+	sortColumn              int
+	desc                    bool
+	collapsed               map[string]bool
+	onRow                   func([]string)
+	tr                      func(string) string
+	fontScale               int // percent (60–200), default 100
 }
 
 type dynamicFilterRow struct {
@@ -320,18 +323,12 @@ func (d *desktop) build() {
 	d.instruments = newGrid(d.window, d.tr, d, d.cfg.FontScaleInstruments)
 	d.from = widget.NewDateEntry()
 	d.to = widget.NewDateEntry()
+	d.from.SetPlaceHolder(d.tr("from"))
+	d.to.SetPlaceHolder(d.tr("to"))
 	d.status = widget.NewLabel("")
 
-	portfolioBar := container.NewHBox(
-		button(d.tr("refresh"), widget.HighImportance, d.refreshPortfolio),
-		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }),
-		d.makeScaleBar(d.portfolio, &d.cfg.FontScalePortfolio))
-	operationsBar := container.NewHBox(
-		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
-		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
-		button(d.tr("refresh"), widget.HighImportance, d.refreshOperations),
-		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }),
-		d.makeScaleBar(d.operations, &d.cfg.FontScaleOperations))
+	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, d.refreshPortfolio, func() { d.exportAll() }, d.portfolio.reset)
+	operationsBar := d.operationsBar()
 	// Left-click on a position/operation row opens the instrument card with a
 	// hyperlink to the T-Invest website.
 	d.portfolio.onRow = func(row []string) { d.showRowCard(row, portfolioFields) }
@@ -395,6 +392,92 @@ func (d *desktop) makeScaleBar(g *grid, scalePtr *int) *fyne.Container {
 		}
 	})
 	return container.NewHBox(minus, plus, label)
+}
+
+// tableBar keeps shared table controls in the same adaptive order on every
+// data tab. Prefix controls are used only for the operations period fields.
+func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export, reset func(), prefix ...fyne.CanvasObject) *fyne.Container {
+	objects := append([]fyne.CanvasObject{}, prefix...)
+	objects = append(objects,
+		button(d.tr("refresh"), widget.MediumImportance, refresh),
+		button(d.tr("export"), widget.MediumImportance, export),
+		d.makeScaleBar(g, scalePtr),
+		g.searchBlock,
+		g.groupBlock,
+		button(d.tr("reset_all"), widget.MediumImportance, reset))
+	return container.New(&flowLayout{widthFn: func() float32 {
+		if d.window == nil || d.window.Canvas() == nil {
+			return 0
+		}
+		return d.window.Canvas().Size().Width
+	}}, objects...)
+}
+
+func (d *desktop) resetOperationsView() {
+	d.operations.reset()
+	d.from.SetDate(nil)
+	d.to.SetDate(nil)
+}
+
+func (d *desktop) resetInstrumentsView() {
+	d.instruments.reset()
+	if d.resetInstrumentFilters != nil {
+		d.resetInstrumentFilters()
+	}
+}
+
+func (d *desktop) operationsBar() *fyne.Container {
+	return d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) }, d.resetOperationsView,
+		container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
+}
+
+const (
+	searchSampleRU = "абвгдеёжзийклмнопрст"
+	searchSampleEN = "abcdefghijklmnopqrst"
+)
+
+// searchFieldWidth reserves enough room for either required 20-character
+// sample at the current theme's normal text scale, plus input padding.
+func searchFieldWidth() float32 {
+	textSize := theme.TextSize()
+	textWidth := max(
+		fyne.MeasureText(searchSampleRU, textSize, fyne.TextStyle{}).Width,
+		fyne.MeasureText(searchSampleEN, textSize, fyne.TextStyle{}).Width)
+	return textWidth + 2*theme.Size(theme.SizeNameInnerPadding)
+}
+
+// tooltipButton fills the tooltip gap in Fyne 2.6's Button widget while
+// keeping the standard button renderer and compact icon-only dimensions.
+type tooltipButton struct {
+	widget.Button
+	tooltip string
+	popup   *widget.PopUp
+}
+
+func newTooltipButton(icon fyne.Resource, tooltip string, tapped func()) *tooltipButton {
+	b := &tooltipButton{tooltip: tooltip}
+	b.Icon = icon
+	b.OnTapped = tapped
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func (b *tooltipButton) MouseIn(e *desktopdriver.MouseEvent) {
+	b.Button.MouseIn(e)
+	canvas := fyne.CurrentApp().Driver().CanvasForObject(b)
+	if canvas == nil || b.tooltip == "" {
+		return
+	}
+	b.popup = widget.NewPopUp(container.NewPadded(widget.NewLabel(b.tooltip)), canvas)
+	b.popup.ShowAtRelativePosition(fyne.NewPos(0, b.Size().Height), b)
+}
+
+func (b *tooltipButton) MouseOut() {
+	b.Button.MouseOut()
+	if b.popup != nil {
+		b.popup.Hide()
+		b.popup = nil
+	}
 }
 
 // calmTheme keeps Fyne's light base but replaces the loud default accent with a
@@ -538,6 +621,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
+	g.group.PlaceHolder = tr("group_label")
 	g.filterBox = container.New(&flowLayout{widthFn: func() float32 {
 		if g.window == nil || g.window.Canvas() == nil {
 			return 0
@@ -639,10 +723,11 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	}
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
-	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
-	g.root = container.NewBorder(container.NewVBox(container.NewHBox(
-		labeled(tr("search_label"), g.search), labeled(" ", next),
-		labeled(tr("group_label"), g.group)), g.filterPanel), nil, nil, nil, g.table)
+	g.findNextButton = newTooltipButton(theme.SearchIcon(), tr("find_next"), func() { g.findNext() })
+	g.findNextButton.Importance = widget.MediumImportance
+	g.searchBlock = container.NewHBox(fixedWidth(searchFieldWidth(), g.search), g.findNextButton)
+	g.groupBlock = g.group
+	g.root = container.NewBorder(g.filterPanel, nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -705,6 +790,23 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	if len(g.filters) == 0 {
 		g.filters = append(g.filters, g.newFilterRow())
 	}
+	g.renderFilterRows()
+	g.updateDynamicFilters()
+	g.apply()
+}
+
+// reset restores the neutral view state without changing sorted columns,
+// scale, loaded data, or settings.
+func (g *grid) reset() {
+	g.search.SetText("")
+	g.group.ClearSelected()
+	g.mu.Lock()
+	g.matchIndex = -1
+	g.navigating = false
+	g.collapsed = map[string]bool{}
+	g.filters = []*dynamicFilterRow{g.newFilterRow()}
+	g.mu.Unlock()
+	g.table.UnselectAll()
 	g.renderFilterRows()
 	g.updateDynamicFilters()
 	g.apply()
@@ -844,7 +946,14 @@ func (g *grid) apply() {
 func (g *grid) findNext() {
 	g.mu.Lock()
 	q := strings.ToLower(strings.TrimSpace(g.search.Text))
-	if q == "" || len(g.visible) == 0 {
+	if q == "" {
+		g.matchIndex = -1
+		g.navigating = false
+		g.mu.Unlock()
+		g.table.UnselectAll()
+		return
+	}
+	if len(g.visible) == 0 {
 		g.mu.Unlock()
 		return
 	}
@@ -1481,6 +1590,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	monthNames := append([]string{""}, localizedMonthNames(d)...)
 	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
+	resettingFilters := false
 	filter := func() catalog.Filter {
 		var dividendFilter *bool
 		if dividends.Selected != "" {
@@ -1789,37 +1899,41 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			})
 		}
 	}
-	for _, s := range []*widget.Select{typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, maturityFrom, maturityTo, month} {
-		s.OnChanged = func(string) { load(false) }
-	}
 	d.loadInstruments = load
-	d.resetInstrumentFilters = func() {
-		typeSelect.SetSelected(d.tr("type_bond"))
-		currency.SetSelected(d.tr("all"))
-		exchange.SetSelected("")
-		sector.SetSelected("")
-		risk.SetSelected("")
-		frequency.SetSelected("")
-		couponType.SetSelected("")
-		dividends.SetSelected("")
-		rateFrom.SetSelected("")
-		rateTo.SetSelected("")
-		maturityFrom.SetSelected("")
-		maturityTo.SetSelected("")
-		month.SetSelected("")
-		load(false)
+	d.instrumentFilterSelects = []*widget.Select{typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, maturityFrom, maturityTo, month}
+	for _, s := range d.instrumentFilterSelects {
+		s.OnChanged = func(string) {
+			if !resettingFilters && d.loadInstruments != nil {
+				d.loadInstruments(false)
+			}
+		}
 	}
-	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)),
-		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
-		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
+	d.resetInstrumentFilters = func() {
+		resettingFilters = true
+		defer func() {
+			resettingFilters = false
+			applyFilters()
+		}()
+		for index, selectbox := range d.instrumentFilterSelects {
+			selected := ""
+			if index < 2 {
+				selected = d.tr("all")
+			}
+			selectbox.SetSelected(selected)
+		}
+	}
+	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) }, d.resetInstrumentsView)
 	if d.scache != nil {
 		seg := d.scache.Segment("bond")
 		if seg != nil {
 			updated.SetText(d.tr("catalog_updated") + ": " + seg.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 		}
 	}
-	scaleBar := d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments)
-	return container.NewBorder(container.NewVBox(bar, updated, scaleBar), nil, nil, nil, d.instruments.root)
+	// Search and grouping now belong to the instrument toolbar, so keep only
+	// filters and the table in the grid body. This removes the former reserved
+	// vertical rows between the tab strip and the controls.
+	d.instruments.root = container.NewBorder(d.instruments.filterPanel, nil, nil, nil, d.instruments.table)
+	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
 }
 
 func needsInstrumentEnrichment(f catalog.Filter) bool {
