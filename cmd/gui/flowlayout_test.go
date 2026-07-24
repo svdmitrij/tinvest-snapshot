@@ -365,6 +365,60 @@ func TestEmptySearchButtonClearsNavigation(t *testing.T) {
 	}
 }
 
+func TestResetButtonsAreLocalAndDoNotLoadData(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	d := &desktop{cfg: &config.Config{Language: "ru", FontScalePortfolio: 100, FontScaleOperations: 100, FontScaleInstruments: 100}, window: w}
+	d.loadText()
+	d.portfolio = newGrid(w, d.tr, d, 100)
+	d.operations = newGrid(w, d.tr, d, 100)
+	d.instruments = newGrid(w, d.tr, d, 100)
+	for _, g := range []*grid{d.portfolio, d.operations, d.instruments} {
+		g.set([]string{"Name"}, [][]string{{"Alpha"}, {"Beta"}})
+	}
+	d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+	selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+	d.from.SetDate(&selected)
+	d.to.SetDate(&selected)
+
+	filtersReset, loads := 0, 0
+	d.resetInstrumentFilters = func() { filtersReset++ }
+	d.loadInstruments = func(bool) { loads++ }
+	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {}, d.portfolio.reset)
+	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, func() {}, func() {}, d.resetOperationsView)
+	instrumentsBar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() {}, func() {}, d.resetInstrumentsView)
+
+	d.portfolio.search.SetText("Alpha")
+	d.operations.search.SetText("Beta")
+	d.instruments.search.SetText("Alpha")
+	portfolioBar.Objects[len(portfolioBar.Objects)-1].(*widget.Button).OnTapped()
+	if d.portfolio.search.Text != "" || d.operations.search.Text != "Beta" || d.instruments.search.Text != "Alpha" {
+		t.Fatal("portfolio reset must not change other tab state")
+	}
+	if d.from.Date == nil || d.to.Date == nil {
+		t.Fatal("portfolio reset must not clear operation period")
+	}
+
+	operationsBar.Objects[len(operationsBar.Objects)-1].(*widget.Button).OnTapped()
+	if d.operations.search.Text != "" || d.from.Date != nil || d.to.Date != nil {
+		t.Fatal("operations reset must clear only its view and period")
+	}
+	if d.instruments.search.Text != "Alpha" {
+		t.Fatal("operations reset must not change instrument state")
+	}
+
+	instrumentsBar.Objects[len(instrumentsBar.Objects)-1].(*widget.Button).OnTapped()
+	if d.instruments.search.Text != "" || filtersReset != 1 || loads != 0 {
+		t.Fatalf("instrument reset: search=%q filters=%d loads=%d, want empty/1/0", d.instruments.search.Text, filtersReset, loads)
+	}
+	instrumentsBar.Objects[len(instrumentsBar.Objects)-1].(*widget.Button).OnTapped()
+	if filtersReset != 2 || loads != 0 {
+		t.Fatalf("repeated instrument reset: filters=%d loads=%d, want 2/0", filtersReset, loads)
+	}
+}
+
 func TestFilterRowIsCompactSingleLine(t *testing.T) {
 	a := test.NewApp()
 	defer a.Quit()

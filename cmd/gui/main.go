@@ -327,12 +327,7 @@ func (d *desktop) build() {
 	d.status = widget.NewLabel("")
 
 	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, d.refreshPortfolio, func() { d.exportAll() }, d.portfolio.reset)
-	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) }, func() {
-		d.operations.reset()
-		d.from.SetDate(nil)
-		d.to.SetDate(nil)
-		d.refreshOperations()
-	},
+	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) }, d.resetOperationsView,
 		container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
 	// Left-click on a position/operation row opens the instrument card with a
 	// hyperlink to the T-Invest website.
@@ -416,6 +411,19 @@ func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export, reset func()
 		}
 		return d.window.Canvas().Size().Width
 	}}, objects...)
+}
+
+func (d *desktop) resetOperationsView() {
+	d.operations.reset()
+	d.from.SetDate(nil)
+	d.to.SetDate(nil)
+}
+
+func (d *desktop) resetInstrumentsView() {
+	d.instruments.reset()
+	if d.resetInstrumentFilters != nil {
+		d.resetInstrumentFilters()
+	}
 }
 
 const (
@@ -1577,6 +1585,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	monthNames := append([]string{""}, localizedMonthNames(d)...)
 	month := widget.NewSelect(monthNames, nil)
 	updated := widget.NewLabel("")
+	resettingFilters := false
 	filter := func() catalog.Filter {
 		var dividendFilter *bool
 		if dividends.Selected != "" {
@@ -1886,10 +1895,19 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		}
 	}
 	for _, s := range []*widget.Select{typeSelect, currency, exchange, sector, risk, frequency, couponType, dividends, rateFrom, rateTo, maturityFrom, maturityTo, month} {
-		s.OnChanged = func(string) { load(false) }
+		s.OnChanged = func(string) {
+			if !resettingFilters {
+				load(false)
+			}
+		}
 	}
 	d.loadInstruments = load
 	d.resetInstrumentFilters = func() {
+		resettingFilters = true
+		defer func() {
+			resettingFilters = false
+			applyFilters()
+		}()
 		typeSelect.SetSelected(d.tr("all"))
 		currency.SetSelected(d.tr("all"))
 		exchange.SetSelected("")
@@ -1903,12 +1921,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		maturityFrom.SetSelected("")
 		maturityTo.SetSelected("")
 		month.SetSelected("")
-		load(false)
 	}
-	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) }, func() {
-		d.instruments.reset()
-		d.resetInstrumentFilters()
-	})
+	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) }, d.resetInstrumentsView)
 	if d.scache != nil {
 		seg := d.scache.Segment("bond")
 		if seg != nil {
