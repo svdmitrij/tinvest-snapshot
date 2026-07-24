@@ -320,18 +320,13 @@ func (d *desktop) build() {
 	d.instruments = newGrid(d.window, d.tr, d, d.cfg.FontScaleInstruments)
 	d.from = widget.NewDateEntry()
 	d.to = widget.NewDateEntry()
+	d.from.SetPlaceHolder(d.tr("from"))
+	d.to.SetPlaceHolder(d.tr("to"))
 	d.status = widget.NewLabel("")
 
-	portfolioBar := container.NewHBox(
-		button(d.tr("refresh"), widget.HighImportance, d.refreshPortfolio),
-		button(d.tr("export"), widget.HighImportance, func() { d.exportAll() }),
-		d.makeScaleBar(d.portfolio, &d.cfg.FontScalePortfolio))
-	operationsBar := container.NewHBox(
-		labeled(d.tr("from"), container.NewGridWrap(dateSize, d.from)),
-		labeled(d.tr("to"), container.NewGridWrap(dateSize, d.to)),
-		button(d.tr("refresh"), widget.HighImportance, d.refreshOperations),
-		button(d.tr("export"), widget.MediumImportance, func() { d.operations.exportView(d.cfg.ReportsDir) }),
-		d.makeScaleBar(d.operations, &d.cfg.FontScaleOperations))
+	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, d.refreshPortfolio, func() { d.exportAll() })
+	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) },
+		container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
 	// Left-click on a position/operation row opens the instrument card with a
 	// hyperlink to the T-Invest website.
 	d.portfolio.onRow = func(row []string) { d.showRowCard(row, portfolioFields) }
@@ -395,6 +390,24 @@ func (d *desktop) makeScaleBar(g *grid, scalePtr *int) *fyne.Container {
 		}
 	})
 	return container.NewHBox(minus, plus, label)
+}
+
+// tableBar keeps shared table controls in the same adaptive order on every
+// data tab. Prefix controls are used only for the operations period fields.
+func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export func(), prefix ...fyne.CanvasObject) *fyne.Container {
+	objects := append([]fyne.CanvasObject{}, prefix...)
+	objects = append(objects,
+		button(d.tr("refresh"), widget.MediumImportance, refresh),
+		button(d.tr("export"), widget.MediumImportance, export),
+		d.makeScaleBar(g, scalePtr),
+		g.searchBlock,
+		g.groupBlock)
+	return container.New(&flowLayout{widthFn: func() float32 {
+		if d.window == nil || d.window.Canvas() == nil {
+			return 0
+		}
+		return d.window.Canvas().Size().Width
+	}}, objects...)
 }
 
 // calmTheme keeps Fyne's light base but replaces the loud default accent with a
@@ -538,6 +551,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
+	g.group.PlaceHolder = tr("group_label")
 	g.filterBox = container.New(&flowLayout{widthFn: func() float32 {
 		if g.window == nil || g.window.Canvas() == nil {
 			return 0
@@ -640,9 +654,9 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
 	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
-	g.searchBlock = container.NewHBox(labeled(tr("search_label"), g.search), labeled(" ", next))
-	g.groupBlock = labeled(tr("group_label"), g.group)
-	g.root = container.NewBorder(container.NewVBox(container.NewHBox(g.searchBlock, g.groupBlock), g.filterPanel), nil, nil, nil, g.table)
+	g.searchBlock = container.NewHBox(g.search, next)
+	g.groupBlock = g.group
+	g.root = container.NewBorder(g.filterPanel, nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -1809,20 +1823,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		month.SetSelected("")
 		load(false)
 	}
-	// Keep the action blocks in one adaptive flow. Each block retains its
-	// existing widget and handler; flowLayout wraps only after the available
-	// row width is exhausted.
-	bar := container.New(&flowLayout{widthFn: func() float32 {
-		if d.window == nil || d.window.Canvas() == nil {
-			return 0
-		}
-		return d.window.Canvas().Size().Width
-	}},
-		button(d.tr("refresh"), widget.MediumImportance, func() { load(true) }),
-		button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) }),
-		d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments),
-		d.instruments.searchBlock,
-		d.instruments.groupBlock)
+	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) })
 	if d.scache != nil {
 		seg := d.scache.Segment("bond")
 		if seg != nil {

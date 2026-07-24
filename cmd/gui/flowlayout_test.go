@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -158,6 +160,82 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			}
 			if !wrapped {
 				t.Fatal("toolbar must wrap when the available width is exhausted")
+			}
+		})
+	}
+}
+
+func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
+	for _, language := range []string{"ru", "en"} {
+		t.Run(language, func(t *testing.T) {
+			a := test.NewApp()
+			defer a.Quit()
+			w := test.NewWindow(nil)
+			defer w.Close()
+			d := &desktop{cfg: &config.Config{Language: language, FontScalePortfolio: 100, FontScaleOperations: 100}, window: w}
+			d.loadText()
+			portfolio := newGrid(w, d.tr, d, 100)
+			operations := newGrid(w, d.tr, d, 100)
+			d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+			d.from.SetPlaceHolder(d.tr("from"))
+			d.to.SetPlaceHolder(d.tr("to"))
+
+			portfolioBar := d.tableBar(portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {})
+			operationsBar := d.tableBar(operations, &d.cfg.FontScaleOperations, func() {}, func() {},
+				container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
+			for name, bar := range map[string]*fyne.Container{"portfolio": portfolioBar, "operations": operationsBar} {
+				if _, ok := bar.Layout.(*flowLayout); !ok {
+					t.Fatalf("%s bar layout = %T, want flowLayout", name, bar.Layout)
+				}
+				bar.Resize(fyne.NewSize(1600, 200))
+				firstY := bar.Objects[0].Position().Y
+				for i, block := range bar.Objects {
+					if block.Position().Y != firstY {
+						t.Fatalf("%s block %d wrapped on a wide panel", name, i)
+					}
+				}
+				bar.Resize(fyne.NewSize(640, 480))
+				for i, block := range bar.Objects {
+					if edge := block.Position().X + block.Size().Width; edge > bar.Size().Width+0.5 {
+						t.Fatalf("%s block %d overflows at 640px", name, i)
+					}
+				}
+			}
+
+			for name, g := range map[string]*grid{"portfolio": portfolio, "operations": operations} {
+				if g.search.PlaceHolder != d.tr("search") {
+					t.Fatalf("%s search placeholder = %q, want %q", name, g.search.PlaceHolder, d.tr("search"))
+				}
+				if g.group.PlaceHolder != d.tr("group_label") {
+					t.Fatalf("%s group placeholder = %q, want %q", name, g.group.PlaceHolder, d.tr("group_label"))
+				}
+				if labelCount(g.searchBlock) != 0 || labelCount(g.groupBlock) != 0 {
+					t.Fatalf("%s toolbar contains an external search or group label", name)
+				}
+				g.group.Options = []string{"", "Name"}
+				g.group.SetSelected("Name")
+				if g.group.Selected != "Name" {
+					t.Fatalf("%s group selection was not retained", name)
+				}
+				g.group.ClearSelected()
+				if g.group.Selected != "" {
+					t.Fatalf("%s group selection was not cleared", name)
+				}
+			}
+
+			if d.from.PlaceHolder != d.tr("from") || d.to.PlaceHolder != d.tr("to") {
+				t.Fatalf("date placeholders = %q, %q", d.from.PlaceHolder, d.to.PlaceHolder)
+			}
+			selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+			d.from.SetDate(&selected)
+			d.to.SetDate(&selected)
+			if d.from.Text == "" || d.to.Text == "" {
+				t.Fatal("selected dates must replace their placeholders")
+			}
+			d.from.SetDate(nil)
+			d.to.SetDate(nil)
+			if d.from.Text != "" || d.to.Text != "" {
+				t.Fatal("cleared dates must restore their placeholders")
 			}
 		})
 	}
