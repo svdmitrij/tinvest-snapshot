@@ -28,6 +28,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	desktopdriver "fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -89,7 +90,7 @@ type grid struct {
 	table                   *widget.Table
 	header, root            *fyne.Container
 	search                  *widget.Entry
-	findNextButton          *widget.Button
+	findNextButton          *tooltipButton
 	searchBlock, groupBlock fyne.CanvasObject
 	filters                 []*dynamicFilterRow
 	filterBox               *fyne.Container
@@ -426,6 +427,40 @@ func searchFieldWidth() float32 {
 	return textWidth + 2*theme.Size(theme.SizeNameInnerPadding)
 }
 
+// tooltipButton fills the tooltip gap in Fyne 2.6's Button widget while
+// keeping the standard button renderer and compact icon-only dimensions.
+type tooltipButton struct {
+	widget.Button
+	tooltip string
+	popup   *widget.PopUp
+}
+
+func newTooltipButton(icon fyne.Resource, tooltip string, tapped func()) *tooltipButton {
+	b := &tooltipButton{tooltip: tooltip}
+	b.Icon = icon
+	b.OnTapped = tapped
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func (b *tooltipButton) MouseIn(e *desktopdriver.MouseEvent) {
+	b.Button.MouseIn(e)
+	canvas := fyne.CurrentApp().Driver().CanvasForObject(b)
+	if canvas == nil || b.tooltip == "" {
+		return
+	}
+	b.popup = widget.NewPopUp(container.NewPadded(widget.NewLabel(b.tooltip)), canvas)
+	b.popup.ShowAtRelativePosition(fyne.NewPos(0, b.Size().Height), b)
+}
+
+func (b *tooltipButton) MouseOut() {
+	b.Button.MouseOut()
+	if b.popup != nil {
+		b.popup.Hide()
+		b.popup = nil
+	}
+}
+
 // calmTheme keeps Fyne's light base but replaces the loud default accent with a
 // muted green, so buttons, selection and the zebra rows read as one quiet
 // palette. The light variant is pinned: the zebra colours are light by design.
@@ -669,7 +704,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	}
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
-	g.findNextButton = widget.NewButtonWithIcon("", theme.SearchIcon(), func() { g.findNext() })
+	g.findNextButton = newTooltipButton(theme.SearchIcon(), tr("find_next"), func() { g.findNext() })
 	g.findNextButton.Importance = widget.MediumImportance
 	g.searchBlock = container.NewHBox(fixedWidth(searchFieldWidth(), g.search), g.findNextButton)
 	g.groupBlock = g.group

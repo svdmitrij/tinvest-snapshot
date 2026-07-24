@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	desktopdriver "fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -49,7 +50,7 @@ func labelCount(o fyne.CanvasObject) int {
 	return 0
 }
 
-func assertSearchControl(t *testing.T, g *grid, sample string) {
+func assertSearchControl(t *testing.T, g *grid, sample, tooltip string) {
 	t.Helper()
 	block, ok := g.searchBlock.(*fyne.Container)
 	if !ok || len(block.Objects) != 2 {
@@ -69,9 +70,29 @@ func assertSearchControl(t *testing.T, g *grid, sample string) {
 	if size := g.findNextButton.MinSize(); size.Width != size.Height {
 		t.Fatalf("find-next button min size = %v, want standard square icon button", size)
 	}
+	if g.findNextButton.tooltip != tooltip {
+		t.Fatalf("find-next tooltip = %q, want %q", g.findNextButton.tooltip, tooltip)
+	}
 	g.search.SetText(sample)
 	if g.search.Text != sample {
 		t.Fatalf("search text = %q, want all 20 characters", g.search.Text)
+	}
+}
+
+func TestTooltipButtonShowsLocalizedDescription(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	b := newTooltipButton(theme.SearchIcon(), "Find next", func() {})
+	w.SetContent(b)
+	b.MouseIn(&desktopdriver.MouseEvent{})
+	if b.popup == nil || !b.popup.Visible() {
+		t.Fatal("tooltip must be visible while the pointer is over the icon button")
+	}
+	b.MouseOut()
+	if b.popup != nil {
+		t.Fatal("tooltip must close when the pointer leaves the icon button")
 	}
 }
 
@@ -136,9 +157,9 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			d.loadText()
 			d.instruments = newGrid(w, d.tr, d, 100)
 			if language == "ru" {
-				assertSearchControl(t, d.instruments, searchSampleRU)
+				assertSearchControl(t, d.instruments, searchSampleRU, "Найти далее")
 			} else {
-				assertSearchControl(t, d.instruments, searchSampleEN)
+				assertSearchControl(t, d.instruments, searchSampleEN, "Find next")
 			}
 			tab := d.instrumentTab()
 			w.SetContent(tab)
@@ -239,10 +260,12 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 
 			for name, g := range map[string]*grid{"portfolio": portfolio, "operations": operations} {
 				sample := searchSampleRU
+				tooltip := "Найти далее"
 				if language == "en" {
 					sample = searchSampleEN
+					tooltip = "Find next"
 				}
-				assertSearchControl(t, g, sample)
+				assertSearchControl(t, g, sample, tooltip)
 				if g.search.PlaceHolder != d.tr("search") {
 					t.Fatalf("%s search placeholder = %q, want %q", name, g.search.PlaceHolder, d.tr("search"))
 				}
