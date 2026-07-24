@@ -326,8 +326,13 @@ func (d *desktop) build() {
 	d.to.SetPlaceHolder(d.tr("to"))
 	d.status = widget.NewLabel("")
 
-	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, d.refreshPortfolio, func() { d.exportAll() })
-	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) },
+	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, d.refreshPortfolio, func() { d.exportAll() }, d.portfolio.reset)
+	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, d.refreshOperations, func() { d.operations.exportView(d.cfg.ReportsDir) }, func() {
+		d.operations.reset()
+		d.from.SetDate(nil)
+		d.to.SetDate(nil)
+		d.refreshOperations()
+	},
 		container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
 	// Left-click on a position/operation row opens the instrument card with a
 	// hyperlink to the T-Invest website.
@@ -396,14 +401,15 @@ func (d *desktop) makeScaleBar(g *grid, scalePtr *int) *fyne.Container {
 
 // tableBar keeps shared table controls in the same adaptive order on every
 // data tab. Prefix controls are used only for the operations period fields.
-func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export func(), prefix ...fyne.CanvasObject) *fyne.Container {
+func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export, reset func(), prefix ...fyne.CanvasObject) *fyne.Container {
 	objects := append([]fyne.CanvasObject{}, prefix...)
 	objects = append(objects,
 		button(d.tr("refresh"), widget.MediumImportance, refresh),
 		button(d.tr("export"), widget.MediumImportance, export),
 		d.makeScaleBar(g, scalePtr),
 		g.searchBlock,
-		g.groupBlock)
+		g.groupBlock,
+		button(d.tr("reset_all"), widget.MediumImportance, reset))
 	return container.New(&flowLayout{widthFn: func() float32 {
 		if d.window == nil || d.window.Canvas() == nil {
 			return 0
@@ -775,6 +781,23 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	g.updateDynamicFilters()
 	g.apply()
 }
+
+// reset restores the neutral view state without changing sorted columns,
+// scale, loaded data, or settings.
+func (g *grid) reset() {
+	g.search.SetText("")
+	g.group.ClearSelected()
+	g.mu.Lock()
+	g.matchIndex = -1
+	g.navigating = false
+	g.collapsed = map[string]bool{}
+	g.filters = []*dynamicFilterRow{g.newFilterRow()}
+	g.mu.Unlock()
+	g.table.UnselectAll()
+	g.renderFilterRows()
+	g.updateDynamicFilters()
+	g.apply()
+}
 func (g *grid) conditions() []filterCondition {
 	out := make([]filterCondition, len(g.filters))
 	for i, r := range g.filters {
@@ -910,7 +933,14 @@ func (g *grid) apply() {
 func (g *grid) findNext() {
 	g.mu.Lock()
 	q := strings.ToLower(strings.TrimSpace(g.search.Text))
-	if q == "" || len(g.visible) == 0 {
+	if q == "" {
+		g.matchIndex = -1
+		g.navigating = false
+		g.mu.Unlock()
+		g.table.UnselectAll()
+		return
+	}
+	if len(g.visible) == 0 {
 		g.mu.Unlock()
 		return
 	}
@@ -1860,7 +1890,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 	}
 	d.loadInstruments = load
 	d.resetInstrumentFilters = func() {
-		typeSelect.SetSelected(d.tr("type_bond"))
+		typeSelect.SetSelected(d.tr("all"))
 		currency.SetSelected(d.tr("all"))
 		exchange.SetSelected("")
 		sector.SetSelected("")
@@ -1875,7 +1905,10 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		month.SetSelected("")
 		load(false)
 	}
-	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) })
+	bar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() { load(true) }, func() { d.instruments.exportView(d.cfg.ReportsDir) }, func() {
+		d.instruments.reset()
+		d.resetInstrumentFilters()
+	})
 	if d.scache != nil {
 		seg := d.scache.Segment("bond")
 		if seg != nil {

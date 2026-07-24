@@ -176,14 +176,17 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			if _, ok := toolbar.Layout.(*flowLayout); !ok {
 				t.Fatalf("toolbar layout = %T, want flowLayout", toolbar.Layout)
 			}
-			if len(toolbar.Objects) != 5 {
-				t.Fatalf("toolbar blocks = %d, want refresh, export, scale, search, group", len(toolbar.Objects))
+			if len(toolbar.Objects) != 6 {
+				t.Fatalf("toolbar blocks = %d, want refresh, export, scale, search, group, reset", len(toolbar.Objects))
 			}
 			if got := toolbar.Objects[0].(*widget.Button).Text; got != d.tr("refresh") {
 				t.Fatalf("first toolbar block = %q, want %q", got, d.tr("refresh"))
 			}
 			if got := toolbar.Objects[1].(*widget.Button).Text; got != d.tr("export") {
 				t.Fatalf("second toolbar block = %q, want %q", got, d.tr("export"))
+			}
+			if got := toolbar.Objects[5].(*widget.Button).Text; got != d.tr("reset_all") {
+				t.Fatalf("last toolbar block = %q, want %q", got, d.tr("reset_all"))
 			}
 			for i, block := range toolbar.Objects[1:] {
 				if block.Position().Y != toolbar.Objects[0].Position().Y {
@@ -236,12 +239,15 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 			d.from.SetPlaceHolder(d.tr("from"))
 			d.to.SetPlaceHolder(d.tr("to"))
 
-			portfolioBar := d.tableBar(portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {})
-			operationsBar := d.tableBar(operations, &d.cfg.FontScaleOperations, func() {}, func() {},
+			portfolioBar := d.tableBar(portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {}, portfolio.reset)
+			operationsBar := d.tableBar(operations, &d.cfg.FontScaleOperations, func() {}, func() {}, operations.reset,
 				container.NewGridWrap(dateSize, d.from), container.NewGridWrap(dateSize, d.to))
 			for name, bar := range map[string]*fyne.Container{"portfolio": portfolioBar, "operations": operationsBar} {
 				if _, ok := bar.Layout.(*flowLayout); !ok {
 					t.Fatalf("%s bar layout = %T, want flowLayout", name, bar.Layout)
+				}
+				if got := bar.Objects[len(bar.Objects)-1].(*widget.Button).Text; got != d.tr("reset_all") {
+					t.Fatalf("%s reset button = %q, want %q", name, got, d.tr("reset_all"))
 				}
 				bar.Resize(fyne.NewSize(1600, 200))
 				firstY := bar.Objects[0].Position().Y
@@ -301,6 +307,61 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 				t.Fatal("cleared dates must restore their placeholders")
 			}
 		})
+	}
+}
+
+func TestGridResetRestoresCurrentTabView(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+	g.set([]string{"Name", "Kind"}, [][]string{{"Alpha", "A"}, {"Beta", "B"}, {"Gamma", "A"}})
+	g.group.SetSelected("Kind")
+	g.collapsed["Kind: A"] = true
+	g.search.SetText("Alpha")
+	g.matchIndex = 1
+	row := g.filters[0]
+	row.column.SetSelected("Kind")
+	row.operation.SetSelected("=")
+	row.value.SetText("A")
+	g.addFilterRow()
+
+	g.reset()
+	if g.search.Text != "" || g.group.Selected != "" || g.matchIndex != -1 || len(g.collapsed) != 0 {
+		t.Fatal("reset must clear search, grouping, navigation, and collapsed groups")
+	}
+	if len(g.filters) != 1 || g.filters[0].column.Selected != "" || g.filters[0].operation.Selected != "" || g.filters[0].value.Text != "" {
+		t.Fatal("reset must leave exactly one empty filter row")
+	}
+	if len(g.visible) != len(g.all) {
+		t.Fatalf("reset visible rows = %d, want %d", len(g.visible), len(g.all))
+	}
+
+	g.reset()
+	if len(g.visible) != len(g.all) || len(g.filters) != 1 {
+		t.Fatal("repeated reset must keep the neutral view unchanged")
+	}
+}
+
+func TestEmptySearchButtonClearsNavigation(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	d := testDesktop()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	g := newGrid(w, d.tr, d, 100)
+	g.set([]string{"Name"}, [][]string{{"Alpha"}, {"Beta"}})
+	g.search.SetText("Alpha")
+	g.findNext()
+	g.search.SetText("")
+	g.findNextButton.OnTapped()
+	if g.matchIndex != -1 || g.navigating {
+		t.Fatal("empty search action must clear navigation state")
+	}
+	if len(g.visible) != len(g.all) {
+		t.Fatalf("empty search visible rows = %d, want full view %d", len(g.visible), len(g.all))
 	}
 }
 
