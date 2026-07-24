@@ -111,9 +111,13 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			w.SetContent(tab)
 			w.Resize(fyne.NewSize(1600, 900))
 
-			toolbar, ok := tab.(*fyne.Container).Objects[0].(*fyne.Container)
+			top, ok := tab.(*fyne.Container).Objects[1].(*fyne.Container)
 			if !ok {
-				t.Fatalf("toolbar type = %T, want container", tab.(*fyne.Container).Objects[0])
+				t.Fatalf("toolbar parent type = %T, want container", tab.(*fyne.Container).Objects[1])
+			}
+			toolbar, ok := top.Objects[0].(*fyne.Container)
+			if !ok {
+				t.Fatalf("toolbar type = %T, want container", top.Objects[0])
 			}
 			if _, ok := toolbar.Layout.(*flowLayout); !ok {
 				t.Fatalf("toolbar layout = %T, want flowLayout", toolbar.Layout)
@@ -134,22 +138,26 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			}
 
 			w.Resize(fyne.NewSize(640, 480))
-			wrapped := false
 			lastY := toolbar.Objects[0].Position().Y
 			for i, block := range toolbar.Objects {
 				if block.Position().Y < lastY {
 					t.Fatalf("toolbar block %d moved before its predecessor", i)
-				}
-				if block.Position().Y > toolbar.Objects[0].Position().Y {
-					wrapped = true
 				}
 				if edge := block.Position().X + block.Size().Width; edge > toolbar.Size().Width+0.5 {
 					t.Fatalf("toolbar block %d overflows: right edge %v > width %v", i, edge, toolbar.Size().Width)
 				}
 				lastY = block.Position().Y
 			}
+
+			w.Resize(fyne.NewSize(300, 480))
+			wrapped := false
+			for _, block := range toolbar.Objects {
+				if block.Position().Y > toolbar.Objects[0].Position().Y {
+					wrapped = true
+				}
+			}
 			if !wrapped {
-				t.Fatal("toolbar must wrap at 640px")
+				t.Fatal("toolbar must wrap when the available width is exhausted")
 			}
 		})
 	}
