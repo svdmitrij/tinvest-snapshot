@@ -49,6 +49,32 @@ func labelCount(o fyne.CanvasObject) int {
 	return 0
 }
 
+func assertSearchControl(t *testing.T, g *grid, sample string) {
+	t.Helper()
+	block, ok := g.searchBlock.(*fyne.Container)
+	if !ok || len(block.Objects) != 2 {
+		t.Fatalf("search block = %T with %d objects, want field and icon button", g.searchBlock, len(block.Objects))
+	}
+	field, ok := block.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("search field wrapper = %T, want fixed-width container", block.Objects[0])
+	}
+	fixed, ok := field.Layout.(*fixedWidthLayout)
+	if !ok || fixed.width < searchFieldWidth() {
+		t.Fatalf("search field width = %#v, want at least %v", field.Layout, searchFieldWidth())
+	}
+	if g.findNextButton.Text != "" || g.findNextButton.Icon == nil || g.findNextButton.Icon.Name() != theme.SearchIcon().Name() {
+		t.Fatalf("find-next button = text %q, icon %v, want icon-only search button", g.findNextButton.Text, g.findNextButton.Icon)
+	}
+	if size := g.findNextButton.MinSize(); size.Width != size.Height {
+		t.Fatalf("find-next button min size = %v, want standard square icon button", size)
+	}
+	g.search.SetText(sample)
+	if g.search.Text != sample {
+		t.Fatalf("search text = %q, want all 20 characters", g.search.Text)
+	}
+}
+
 func snapshot(t *testing.T, w fyne.Window, name string) {
 	t.Helper()
 	dir := os.Getenv("FILTER_PANEL_SNAPSHOT_DIR")
@@ -109,6 +135,11 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 			d := &desktop{cfg: &config.Config{Language: language, FontScaleInstruments: 100}, window: w}
 			d.loadText()
 			d.instruments = newGrid(w, d.tr, d, 100)
+			if language == "ru" {
+				assertSearchControl(t, d.instruments, searchSampleRU)
+			} else {
+				assertSearchControl(t, d.instruments, searchSampleEN)
+			}
 			tab := d.instrumentTab()
 			w.SetContent(tab)
 			w.Resize(fyne.NewSize(1600, 900))
@@ -207,6 +238,11 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 			}
 
 			for name, g := range map[string]*grid{"portfolio": portfolio, "operations": operations} {
+				sample := searchSampleRU
+				if language == "en" {
+					sample = searchSampleEN
+				}
+				assertSearchControl(t, g, sample)
 				if g.search.PlaceHolder != d.tr("search") {
 					t.Fatalf("%s search placeholder = %q, want %q", name, g.search.PlaceHolder, d.tr("search"))
 				}

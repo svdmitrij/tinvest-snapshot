@@ -89,6 +89,7 @@ type grid struct {
 	table                   *widget.Table
 	header, root            *fyne.Container
 	search                  *widget.Entry
+	findNextButton          *widget.Button
 	searchBlock, groupBlock fyne.CanvasObject
 	filters                 []*dynamicFilterRow
 	filterBox               *fyne.Container
@@ -410,6 +411,21 @@ func (d *desktop) tableBar(g *grid, scalePtr *int, refresh, export func(), prefi
 	}}, objects...)
 }
 
+const (
+	searchSampleRU = "абвгдеёжзийклмнопрст"
+	searchSampleEN = "abcdefghijklmnopqrst"
+)
+
+// searchFieldWidth reserves enough room for either required 20-character
+// sample at the current theme's normal text scale, plus input padding.
+func searchFieldWidth() float32 {
+	textSize := theme.TextSize()
+	textWidth := max(
+		fyne.MeasureText(searchSampleRU, textSize, fyne.TextStyle{}).Width,
+		fyne.MeasureText(searchSampleEN, textSize, fyne.TextStyle{}).Width)
+	return textWidth + 2*theme.Size(theme.SizeNameInnerPadding)
+}
+
 // calmTheme keeps Fyne's light base but replaces the loud default accent with a
 // muted green, so buttons, selection and the zebra rows read as one quiet
 // palette. The light variant is pinned: the zebra colours are light by design.
@@ -653,8 +669,9 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	}
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
-	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
-	g.searchBlock = container.NewHBox(g.search, next)
+	g.findNextButton = widget.NewButtonWithIcon("", theme.SearchIcon(), func() { g.findNext() })
+	g.findNextButton.Importance = widget.MediumImportance
+	g.searchBlock = container.NewHBox(fixedWidth(searchFieldWidth(), g.search), g.findNextButton)
 	g.groupBlock = g.group
 	g.root = container.NewBorder(g.filterPanel, nil, nil, nil, g.table)
 	return g
