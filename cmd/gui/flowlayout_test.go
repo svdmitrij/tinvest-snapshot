@@ -97,6 +97,64 @@ func TestFlowLayoutWrapsOnlyWhenRowIsFull(t *testing.T) {
 	}
 }
 
+func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
+	for _, language := range []string{"ru", "en"} {
+		t.Run(language, func(t *testing.T) {
+			a := test.NewApp()
+			defer a.Quit()
+			w := test.NewWindow(nil)
+			defer w.Close()
+			d := &desktop{cfg: &config.Config{Language: language, FontScaleInstruments: 100}, window: w}
+			d.loadText()
+			d.instruments = newGrid(w, d.tr, d, 100)
+			tab := d.instrumentTab()
+			w.SetContent(tab)
+			w.Resize(fyne.NewSize(1600, 900))
+
+			toolbar, ok := tab.(*fyne.Container).Objects[0].(*fyne.Container)
+			if !ok {
+				t.Fatalf("toolbar type = %T, want container", tab.(*fyne.Container).Objects[0])
+			}
+			if _, ok := toolbar.Layout.(*flowLayout); !ok {
+				t.Fatalf("toolbar layout = %T, want flowLayout", toolbar.Layout)
+			}
+			if len(toolbar.Objects) != 5 {
+				t.Fatalf("toolbar blocks = %d, want refresh, export, scale, search, group", len(toolbar.Objects))
+			}
+			if got := toolbar.Objects[0].(*widget.Button).Text; got != d.tr("refresh") {
+				t.Fatalf("first toolbar block = %q, want %q", got, d.tr("refresh"))
+			}
+			if got := toolbar.Objects[1].(*widget.Button).Text; got != d.tr("export") {
+				t.Fatalf("second toolbar block = %q, want %q", got, d.tr("export"))
+			}
+			for i, block := range toolbar.Objects[1:] {
+				if block.Position().Y != toolbar.Objects[0].Position().Y {
+					t.Fatalf("wide toolbar block %d wrapped unexpectedly", i+1)
+				}
+			}
+
+			w.Resize(fyne.NewSize(640, 480))
+			wrapped := false
+			lastY := toolbar.Objects[0].Position().Y
+			for i, block := range toolbar.Objects {
+				if block.Position().Y < lastY {
+					t.Fatalf("toolbar block %d moved before its predecessor", i)
+				}
+				if block.Position().Y > toolbar.Objects[0].Position().Y {
+					wrapped = true
+				}
+				if edge := block.Position().X + block.Size().Width; edge > toolbar.Size().Width+0.5 {
+					t.Fatalf("toolbar block %d overflows: right edge %v > width %v", i, edge, toolbar.Size().Width)
+				}
+				lastY = block.Position().Y
+			}
+			if !wrapped {
+				t.Fatal("toolbar must wrap at 640px")
+			}
+		})
+	}
+}
+
 func TestFilterRowIsCompactSingleLine(t *testing.T) {
 	a := test.NewApp()
 	defer a.Quit()

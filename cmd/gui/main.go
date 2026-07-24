@@ -28,7 +28,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -83,26 +82,27 @@ func (d *desktop) dividendLoadTimeout() time.Duration {
 }
 
 type grid struct {
-	mu                     sync.RWMutex
-	window                 fyne.Window
-	columns                []string
-	all, visible, dataView [][]string
-	table                  *widget.Table
-	header, root           *fyne.Container
-	search                 *widget.Entry
-	filters                []*dynamicFilterRow
-	filterBox              *fyne.Container
-	filterPanel            *fyne.Container
-	filterRowHeight        float32
-	matchIndex             int
-	navigating             bool
-	group                  *widget.Select
-	sortColumn             int
-	desc                   bool
-	collapsed              map[string]bool
-	onRow                  func([]string)
-	tr                     func(string) string
-	fontScale              int // percent (60–200), default 100
+	mu                      sync.RWMutex
+	window                  fyne.Window
+	columns                 []string
+	all, visible, dataView  [][]string
+	table                   *widget.Table
+	header, root            *fyne.Container
+	search                  *widget.Entry
+	searchBlock, groupBlock fyne.CanvasObject
+	filters                 []*dynamicFilterRow
+	filterBox               *fyne.Container
+	filterPanel             *fyne.Container
+	filterRowHeight         float32
+	matchIndex              int
+	navigating              bool
+	group                   *widget.Select
+	sortColumn              int
+	desc                    bool
+	collapsed               map[string]bool
+	onRow                   func([]string)
+	tr                      func(string) string
+	fontScale               int // percent (60–200), default 100
 }
 
 type dynamicFilterRow struct {
@@ -640,9 +640,9 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	g.header = container.NewHBox()
 	g.search.OnChanged = func(string) { g.matchIndex = -1; g.findNext() }
 	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
-	g.root = container.NewBorder(container.NewVBox(container.NewHBox(
-		labeled(tr("search_label"), g.search), labeled(" ", next),
-		labeled(tr("group_label"), g.group)), g.filterPanel), nil, nil, nil, g.table)
+	g.searchBlock = container.NewHBox(labeled(tr("search_label"), g.search), labeled(" ", next))
+	g.groupBlock = labeled(tr("group_label"), g.group)
+	g.root = container.NewBorder(container.NewVBox(container.NewHBox(g.searchBlock, g.groupBlock), g.filterPanel), nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -1809,17 +1809,31 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		month.SetSelected("")
 		load(false)
 	}
-	bar := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)),
-		labeled(" ", button(d.tr("refresh"), widget.MediumImportance, func() { load(true) })),
-		labeled(" ", button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) })))
+	// Keep the action blocks in one adaptive flow. Each block retains its
+	// existing widget and handler; flowLayout wraps only after the available
+	// row width is exhausted.
+	bar := container.New(&flowLayout{widthFn: func() float32 {
+		if d.window == nil || d.window.Canvas() == nil {
+			return 0
+		}
+		return d.window.Canvas().Size().Width
+	}},
+		button(d.tr("refresh"), widget.MediumImportance, func() { load(true) }),
+		button(d.tr("export"), widget.MediumImportance, func() { d.instruments.exportView(d.cfg.ReportsDir) }),
+		d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments),
+		d.instruments.searchBlock,
+		d.instruments.groupBlock)
 	if d.scache != nil {
 		seg := d.scache.Segment("bond")
 		if seg != nil {
 			updated.SetText(d.tr("catalog_updated") + ": " + seg.UpdatedAt.In(time.FixedZone("", *d.cfg.TimezoneOffset*3600)).Format("2006-01-02 15:04:05"))
 		}
 	}
-	scaleBar := d.makeScaleBar(d.instruments, &d.cfg.FontScaleInstruments)
-	return container.NewBorder(container.NewVBox(bar, updated, scaleBar), nil, nil, nil, d.instruments.root)
+	// Search and grouping now belong to the instrument toolbar, so keep only
+	// filters and the table in the grid body. This removes the former reserved
+	// vertical rows between the tab strip and the controls.
+	d.instruments.root = container.NewBorder(d.instruments.filterPanel, nil, nil, nil, d.instruments.table)
+	return container.NewBorder(container.NewVBox(bar, updated), nil, nil, nil, d.instruments.root)
 }
 
 func needsInstrumentEnrichment(f catalog.Filter) bool {
