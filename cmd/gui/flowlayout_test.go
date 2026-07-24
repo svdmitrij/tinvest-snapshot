@@ -168,6 +168,10 @@ func TestInstrumentToolbarKeepsBlocksOrderedAndAdaptive(t *testing.T) {
 func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 	for _, language := range []string{"ru", "en"} {
 		t.Run(language, func(t *testing.T) {
+			groupPlaceholder, fromPlaceholder, toPlaceholder := "Группировать по", "Период с", "Период по"
+			if language == "en" {
+				groupPlaceholder, fromPlaceholder, toPlaceholder = "Group by", "Period from", "Period to"
+			}
 			a := test.NewApp()
 			defer a.Quit()
 			w := test.NewWindow(nil)
@@ -206,8 +210,8 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 				if g.search.PlaceHolder != d.tr("search") {
 					t.Fatalf("%s search placeholder = %q, want %q", name, g.search.PlaceHolder, d.tr("search"))
 				}
-				if g.group.PlaceHolder != d.tr("group_label") {
-					t.Fatalf("%s group placeholder = %q, want %q", name, g.group.PlaceHolder, d.tr("group_label"))
+				if g.group.PlaceHolder != groupPlaceholder {
+					t.Fatalf("%s group placeholder = %q, want %q", name, g.group.PlaceHolder, groupPlaceholder)
 				}
 				if labelCount(g.searchBlock) != 0 || labelCount(g.groupBlock) != 0 {
 					t.Fatalf("%s toolbar contains an external search or group label", name)
@@ -223,8 +227,8 @@ func TestTablePanelsUseUnifiedControlsAndLocalizedPlaceholders(t *testing.T) {
 				}
 			}
 
-			if d.from.PlaceHolder != d.tr("from") || d.to.PlaceHolder != d.tr("to") {
-				t.Fatalf("date placeholders = %q, %q", d.from.PlaceHolder, d.to.PlaceHolder)
+			if d.from.PlaceHolder != fromPlaceholder || d.to.PlaceHolder != toPlaceholder {
+				t.Fatalf("date placeholders = %q, %q, want %q, %q", d.from.PlaceHolder, d.to.PlaceHolder, fromPlaceholder, toPlaceholder)
 			}
 			selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
 			d.from.SetDate(&selected)
