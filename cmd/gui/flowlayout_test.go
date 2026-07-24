@@ -3,8 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"image/color"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -365,7 +368,33 @@ func TestEmptySearchButtonClearsNavigation(t *testing.T) {
 	}
 }
 
-func TestResetButtonsAreLocalAndDoNotLoadData(t *testing.T) {
+func resetButton(t *testing.T, bar *fyne.Container) *widget.Button {
+	t.Helper()
+	button, ok := bar.Objects[len(bar.Objects)-1].(*widget.Button)
+	if !ok {
+		t.Fatalf("last toolbar object = %T, want reset button", bar.Objects[len(bar.Objects)-1])
+	}
+	return button
+}
+
+func instrumentToolbar(t *testing.T, tab fyne.CanvasObject) *fyne.Container {
+	t.Helper()
+	root, ok := tab.(*fyne.Container)
+	if !ok || len(root.Objects) < 2 {
+		t.Fatalf("instrument tab = %T, want border container with top toolbar", tab)
+	}
+	top, ok := root.Objects[1].(*fyne.Container)
+	if !ok || len(top.Objects) == 0 {
+		t.Fatalf("instrument toolbar parent = %T, want non-empty container", root.Objects[1])
+	}
+	bar, ok := top.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("instrument toolbar = %T, want container", top.Objects[0])
+	}
+	return bar
+}
+
+func TestActualResetCallbacksStayLocalAndIsolated(t *testing.T) {
 	a := test.NewApp()
 	defer a.Quit()
 	w := test.NewWindow(nil)
@@ -382,18 +411,14 @@ func TestResetButtonsAreLocalAndDoNotLoadData(t *testing.T) {
 	selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
 	d.from.SetDate(&selected)
 	d.to.SetDate(&selected)
-
-	filtersReset, loads := 0, 0
-	d.resetInstrumentFilters = func() { filtersReset++ }
-	d.loadInstruments = func(bool) { loads++ }
 	portfolioBar := d.tableBar(d.portfolio, &d.cfg.FontScalePortfolio, func() {}, func() {}, d.portfolio.reset)
-	operationsBar := d.tableBar(d.operations, &d.cfg.FontScaleOperations, func() {}, func() {}, d.resetOperationsView)
-	instrumentsBar := d.tableBar(d.instruments, &d.cfg.FontScaleInstruments, func() {}, func() {}, d.resetInstrumentsView)
+	operationsBar := d.operationsBar()
+	instrumentsBar := instrumentToolbar(t, d.instrumentTab())
 
 	d.portfolio.search.SetText("Alpha")
 	d.operations.search.SetText("Beta")
 	d.instruments.search.SetText("Alpha")
-	portfolioBar.Objects[len(portfolioBar.Objects)-1].(*widget.Button).OnTapped()
+	resetButton(t, portfolioBar).OnTapped()
 	if d.portfolio.search.Text != "" || d.operations.search.Text != "Beta" || d.instruments.search.Text != "Alpha" {
 		t.Fatal("portfolio reset must not change other tab state")
 	}
@@ -401,7 +426,7 @@ func TestResetButtonsAreLocalAndDoNotLoadData(t *testing.T) {
 		t.Fatal("portfolio reset must not clear operation period")
 	}
 
-	operationsBar.Objects[len(operationsBar.Objects)-1].(*widget.Button).OnTapped()
+	resetButton(t, operationsBar).OnTapped()
 	if d.operations.search.Text != "" || d.from.Date != nil || d.to.Date != nil {
 		t.Fatal("operations reset must clear only its view and period")
 	}
@@ -409,13 +434,125 @@ func TestResetButtonsAreLocalAndDoNotLoadData(t *testing.T) {
 		t.Fatal("operations reset must not change instrument state")
 	}
 
-	instrumentsBar.Objects[len(instrumentsBar.Objects)-1].(*widget.Button).OnTapped()
-	if d.instruments.search.Text != "" || filtersReset != 1 || loads != 0 {
-		t.Fatalf("instrument reset: search=%q filters=%d loads=%d, want empty/1/0", d.instruments.search.Text, filtersReset, loads)
+	resetButton(t, instrumentsBar).OnTapped()
+	if d.instruments.search.Text != "" {
+		t.Fatalf("instrument reset search = %q, want empty", d.instruments.search.Text)
 	}
-	instrumentsBar.Objects[len(instrumentsBar.Objects)-1].(*widget.Button).OnTapped()
-	if filtersReset != 2 || loads != 0 {
-		t.Fatalf("repeated instrument reset: filters=%d loads=%d, want 2/0", filtersReset, loads)
+	resetButton(t, instrumentsBar).OnTapped()
+	if d.instruments.search.Text != "" {
+		t.Fatal("repeated instrument reset must preserve the neutral view")
+	}
+}
+
+func TestActualInstrumentResetSuppressesLoadEnrichmentAndCacheWrite(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	d := &desktop{cfg: &config.Config{Language: "ru", FontScaleInstruments: 100}, window: w}
+	d.loadText()
+	d.instruments = newGrid(w, d.tr, d, 100)
+	d.cachePath = filepath.Join(t.TempDir(), "catalog.json")
+	cacheBefore := []byte("catalog cache must remain untouched")
+	if err := os.WriteFile(d.cachePath, cacheBefore, 0o600); err != nil {
+		t.Fatalf("write catalog cache fixture: %v", err)
+	}
+	bar := instrumentToolbar(t, d.instrumentTab())
+	if got := len(d.instrumentFilterSelects); got != 13 {
+		t.Fatalf("instrument filter controls = %d, want 13", got)
+	}
+
+	loadCalls, enrichmentAttempts, cacheWriteAttempts := 0, 0, 0
+	d.loadInstruments = func(force bool) {
+		loadCalls++
+		if !force {
+			enrichmentAttempts++
+			cacheWriteAttempts++
+		}
+	}
+	d.instrumentFilterSelects[0].SetSelected(d.tr("type_share"))
+	if loadCalls != 1 {
+		t.Fatalf("real instrument selector callback loads = %d, want 1", loadCalls)
+	}
+	loadCalls, enrichmentAttempts, cacheWriteAttempts = 0, 0, 0
+
+	resetButton(t, bar).OnTapped()
+	if loadCalls != 0 || enrichmentAttempts != 0 || cacheWriteAttempts != 0 {
+		t.Fatalf("instrument reset side effects: loads=%d enrichment=%d cache=%d, want zero", loadCalls, enrichmentAttempts, cacheWriteAttempts)
+	}
+	if d.instrumentFilterSelects[0].Selected != d.tr("all") {
+		t.Fatalf("instrument type after reset = %q, want %q", d.instrumentFilterSelects[0].Selected, d.tr("all"))
+	}
+	cacheAfter, err := os.ReadFile(d.cachePath)
+	if err != nil {
+		t.Fatalf("read catalog cache fixture: %v", err)
+	}
+	if !bytes.Equal(cacheAfter, cacheBefore) {
+		t.Fatal("instrument reset must not modify the catalog cache")
+	}
+
+	resetButton(t, bar).OnTapped()
+	if loadCalls != 0 || enrichmentAttempts != 0 || cacheWriteAttempts != 0 {
+		t.Fatalf("repeated instrument reset side effects: loads=%d enrichment=%d cache=%d, want zero", loadCalls, enrichmentAttempts, cacheWriteAttempts)
+	}
+}
+
+func TestActualOperationsResetDoesNotScheduleNetworkOrModifyCache(t *testing.T) {
+	a := test.NewApp()
+	defer a.Quit()
+	w := test.NewWindow(nil)
+	defer w.Close()
+	requestStarted := make(chan struct{}, 1)
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		<-releaseRequest
+	}))
+	defer server.Close()
+	defer close(releaseRequest)
+	d := &desktop{cfg: &config.Config{Language: "ru", Token: "test", Endpoint: server.URL, ReportsDir: t.TempDir(), FontScaleOperations: 100}, window: w, status: widget.NewLabel("")}
+	d.loadText()
+	d.operations = newGrid(w, d.tr, d, 100)
+	d.instruments = newGrid(w, d.tr, d, 100)
+	d.from, d.to = widget.NewDateEntry(), widget.NewDateEntry()
+	d.operationsCachePath = filepath.Join(t.TempDir(), "operations.json")
+	cacheBefore := []byte("operations cache must remain untouched")
+	if err := os.WriteFile(d.operationsCachePath, cacheBefore, 0o600); err != nil {
+		t.Fatalf("write operations cache fixture: %v", err)
+	}
+	selected := time.Date(2026, time.July, 24, 0, 0, 0, 0, time.UTC)
+	d.from.SetDate(&selected)
+	d.to.SetDate(&selected)
+	d.operations.search.SetText("Alpha")
+	d.instruments.search.SetText("Beta")
+
+	resetButton(t, d.operationsBar()).OnTapped()
+	if d.from.Date != nil || d.to.Date != nil || d.operations.search.Text != "" {
+		t.Fatal("operations reset must clear only its local period and view")
+	}
+	if d.instruments.search.Text != "Beta" {
+		t.Fatal("operations reset must not modify the instruments tab")
+	}
+	d.refreshMu.Lock()
+	_, refreshing := d.refreshing["operations"]
+	d.refreshMu.Unlock()
+	if refreshing {
+		t.Fatal("operations reset must not schedule a network refresh")
+	}
+	select {
+	case <-requestStarted:
+		t.Fatal("operations reset must not issue an API request")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cacheAfter, err := os.ReadFile(d.operationsCachePath)
+	if err != nil {
+		t.Fatalf("read operations cache fixture: %v", err)
+	}
+	if !bytes.Equal(cacheAfter, cacheBefore) {
+		t.Fatal("operations reset must not modify the operations cache")
 	}
 }
 
