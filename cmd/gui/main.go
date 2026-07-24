@@ -92,6 +92,8 @@ type grid struct {
 	search                 *widget.Entry
 	filters                []*dynamicFilterRow
 	filterBox              *fyne.Container
+	filterPanel            *fyne.Container
+	filterRowHeight        float32
 	matchIndex             int
 	navigating             bool
 	group                  *widget.Select
@@ -472,6 +474,10 @@ type tableCell struct {
 	onTap      func()
 }
 
+func dynamicRowHeight() float32 {
+	return widget.NewButton("", nil).MinSize().Height
+}
+
 func newTableCell(tr func(string) string) *tableCell {
 	c := &tableCell{tr: tr}
 	c.background = canvas.NewRectangle(zebraOdd)
@@ -482,7 +488,9 @@ func newTableCell(tr func(string) string) *tableCell {
 }
 
 func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text))
+	minHeight := canvas.NewRectangle(color.Transparent)
+	minHeight.SetMinSize(fyne.NewSize(1, dynamicRowHeight()))
+	return widget.NewSimpleRenderer(container.NewStack(c.background, c.text, minHeight))
 }
 
 func (c *tableCell) set(value string, key string, even bool, fontScale float32) {
@@ -526,6 +534,7 @@ func (c *tableCell) TappedSecondary(e *fyne.PointEvent) {
 
 func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *grid {
 	g := &grid{window: w, sortColumn: -1, collapsed: map[string]bool{}, tr: tr, fontScale: fontScale}
+	g.filterRowHeight = dynamicRowHeight()
 	g.search = widget.NewEntry()
 	g.search.SetPlaceHolder(tr("search"))
 	g.group = widget.NewSelect([]string{}, func(string) { g.apply() })
@@ -535,6 +544,10 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 		}
 		return g.window.Canvas().Size().Width
 	}})
+	filterBorder := canvas.NewRectangle(color.Transparent)
+	filterBorder.StrokeColor = theme.ForegroundColor()
+	filterBorder.StrokeWidth = 2
+	g.filterPanel = container.NewStack(filterBorder, container.NewPadded(g.filterBox))
 	g.addFilterRow()
 	g.table = widget.NewTable(func() (int, int) { g.mu.RLock(); defer g.mu.RUnlock(); return len(g.visible), len(g.columns) }, func() fyne.CanvasObject {
 		return newTableCell(tr)
@@ -629,7 +642,7 @@ func newGrid(w fyne.Window, tr func(string) string, d *desktop, fontScale int) *
 	next := widget.NewButton(tr("find_next"), func() { g.findNext() })
 	g.root = container.NewBorder(container.NewVBox(container.NewHBox(
 		labeled(tr("search_label"), g.search), labeled(" ", next),
-		labeled(tr("group_label"), g.group)), g.filterBox), nil, nil, nil, g.table)
+		labeled(tr("group_label"), g.group)), g.filterPanel), nil, nil, nil, g.table)
 	return g
 }
 func (g *grid) set(columns []string, rows [][]string) {
@@ -646,6 +659,11 @@ func (g *grid) set(columns []string, rows [][]string) {
 	g.apply()
 }
 func (g *grid) addFilterRow() {
+	g.filters = append(g.filters, g.newFilterRow())
+	g.renderFilterRows()
+}
+
+func (g *grid) newFilterRow() *dynamicFilterRow {
 	r := &dynamicFilterRow{column: widget.NewSelect([]string{}, nil), operation: widget.NewSelect([]string{}, nil), value: widget.NewSelectEntry([]string{}), boolean: widget.NewSelect([]string{"true", "false", "?"}, nil), valueBox: container.NewMax()}
 	r.column.PlaceHolder = g.tr("filter_column")
 	r.operation.PlaceHolder = " "
@@ -656,16 +674,25 @@ func (g *grid) addFilterRow() {
 	r.operation.OnChanged = func(string) { g.updateDynamicFilters(); g.apply() }
 	r.value.OnChanged = func(string) { r.valueSet = true; g.updateDynamicFilters(); g.apply() }
 	r.boolean.OnChanged = func(string) { g.apply() }
-	g.filters = append(g.filters, r)
-	g.filterBox.Add(g.filterRowUI(r))
+	return r
+}
+
+func (g *grid) renderFilterRows() {
+	g.filterBox.RemoveAll()
+	for i, row := range g.filters {
+		g.filterBox.Add(g.filterRowUI(row, i == len(g.filters)-1))
+	}
 }
 
 // filterRowUI renders one condition as a single compact line: column,
 // operation, value, add and remove — without captions above the widgets.
-func (g *grid) filterRowUI(r *dynamicFilterRow) fyne.CanvasObject {
-	plus := widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() })
+func (g *grid) filterRowUI(r *dynamicFilterRow, last bool) fyne.CanvasObject {
 	remove := widget.NewButton("x", func() { g.removeFilterRow(r) })
-	return container.NewHBox(fixedWidth(filterColumnWidth, r.column), fixedWidth(filterOperationWidth, r.operation), fixedWidth(filterValueWidth, r.valueBox), plus, remove)
+	objects := []fyne.CanvasObject{fixedWidth(filterColumnWidth, r.column), fixedWidth(filterOperationWidth, r.operation), fixedWidth(filterValueWidth, r.valueBox)}
+	if last {
+		objects = append(objects, widget.NewButton("+", func() { g.addFilterRow(); g.updateDynamicFilters(); g.apply() }))
+	}
+	return container.NewHBox(append(objects, remove)...)
 }
 func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 	for i, row := range g.filters {
@@ -675,13 +702,10 @@ func (g *grid) removeFilterRow(target *dynamicFilterRow) {
 		g.filters = append(g.filters[:i], g.filters[i+1:]...)
 		break
 	}
-	g.filterBox.RemoveAll()
 	if len(g.filters) == 0 {
-		g.addFilterRow()
+		g.filters = append(g.filters, g.newFilterRow())
 	}
-	for _, row := range g.filters {
-		g.filterBox.Add(g.filterRowUI(row))
-	}
+	g.renderFilterRows()
 	g.updateDynamicFilters()
 	g.apply()
 }
