@@ -17,35 +17,6 @@ mkdir -p "$OUT"
 echo "=== Generating icons ==="
 go run ./cmd/icon-gen --out assets/
 
-# Build helper: creates a staging directory with the binary + docs, then
-# runs the archiver command.
-build() {
-	local goos="$1" ext="$2" arcname="$3"
-	local stage="$OUT/tinvest-snapshot"
-	mkdir -p "$stage"
-	CGO_ENABLED=0 GOOS="$goos" GOARCH=amd64 go build -trimpath -buildvcs=false \
-		-o "$stage/tinvest-snapshot${ext}" ./cmd/snapshot
-	cp config.example.json README.md "$stage/"
-	( cd "$OUT" && "${@:4}" )
-	rm -rf "$stage"
-}
-
-# ---- Existing formats ----
-
-echo "=== Building tar.gz / zip ==="
-# Linux: tar.gz
-build linux "" "tinvest-snapshot-${VERSION}-linux-amd64.tar.gz" \
-	tar -czf "tinvest-snapshot-${VERSION}-linux-amd64.tar.gz" tinvest-snapshot
-
-# Windows: zip if available, otherwise tar.gz
-if command -v zip >/dev/null 2>&1; then
-	build windows ".exe" "tinvest-snapshot-${VERSION}-windows-amd64.zip" \
-		zip -qr "tinvest-snapshot-${VERSION}-windows-amd64.zip" tinvest-snapshot
-else
-	build windows ".exe" "tinvest-snapshot-${VERSION}-windows-amd64.tar.gz" \
-		tar -czf "tinvest-snapshot-${VERSION}-windows-amd64.tar.gz" tinvest-snapshot
-fi
-
 # ---- deb package ----
 
 build_deb() {
@@ -123,159 +94,87 @@ CTRL
 
 build_rpm() {
 	local raw_version="$1"
-	# Strip leading 'v' for rpm version field
+	# Strip leading 'v' and sanitize for RPM (no hyphens allowed in Version)
 	local version="${raw_version#v}"
+	version="${version//-/_}"
+	local pkg_name="tinvest-snapshot"
 	local pkg="tinvest-snapshot-${version}-1.x86_64.rpm"
 	echo "=== Building $pkg ==="
 
-	local stage="$OUT/rpm-pkg"
-	rm -rf "$stage"
-	mkdir -p "$stage/opt/tinvest-snapshot"
-	mkdir -p "$stage/usr/local/bin"
-	mkdir -p "$stage/usr/share/doc/tinvest-snapshot"
-	mkdir -p "$stage/usr/share/applications"
-	mkdir -p "$stage/usr/share/icons/hicolor/128x128/apps"
+	local abs_out
+	abs_out=$(cd "$OUT" && pwd)
+	local abs_src
+	abs_src=$(pwd)
+	local rpmbuild_root="$abs_out/rpmbuild"
+	rm -rf "$rpmbuild_root"
+	mkdir -p "$rpmbuild_root"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
-	# Binary + symlink
-	cp "$OUT/tinvest-snapshot-linux-binary" "$stage/opt/tinvest-snapshot/tinvest-snapshot"
-	chmod 755 "$stage/opt/tinvest-snapshot/tinvest-snapshot"
-	ln -sf /opt/tinvest-snapshot/tinvest-snapshot "$stage/usr/local/bin/tinvest-snapshot"
+	# Write spec file with install section
+	cat > "$rpmbuild_root/SPECS/tinvest-snapshot.spec" <<SPEC
+Name:           tinvest-snapshot
+Version:        ${version}
+Release:        1%{?dist}
+Summary:        T-Invest portfolio snapshot utility
+License:        MIT
+URL:            https://github.com/svdmitrij/tinvest-snapshot
+BuildArch:      x86_64
 
-	# Docs
-	cp config.example.json README.md "$stage/opt/tinvest-snapshot/"
-	cp README.md "$stage/usr/share/doc/tinvest-snapshot/"
-	gzip -cn9 CHANGELOG.md > "$stage/usr/share/doc/tinvest-snapshot/changelog.gz" 2>/dev/null || true
+%description
+CLI-утилита для получения снимка портфеля Т-Инвестиций,
+выгрузки операций и инструментов в JSON, CSV и XLSX.
+Поддерживает GUI (Fyne) и консольный режим.
 
-	# Desktop integration
-	cp assets/tinvest-snapshot.desktop "$stage/usr/share/applications/"
-	cp assets/icon_128.png "$stage/usr/share/icons/hicolor/128x128/apps/tinvest-snapshot.png"
+%install
+mkdir -p %{buildroot}/opt/tinvest-snapshot
+mkdir -p %{buildroot}/usr/local/bin
+mkdir -p %{buildroot}/usr/share/doc/tinvest-snapshot
+mkdir -p %{buildroot}/usr/share/applications
+mkdir -p %{buildroot}/usr/share/icons/hicolor/128x128/apps
 
-	# Build CPIO payload
-	( cd "$stage" && find . | cpio --quiet -o -H newc ) > "$OUT/rpm-payload.cpio"
-	local payload_size
-	payload_size=$(stat -c%s "$OUT/rpm-payload.cpio")
-	gzip -n9 "$OUT/rpm-payload.cpio"
-	local gzpayload="$OUT/rpm-payload.cpio.gz"
-	local gz_size
-	gz_size=$(stat -c%s "$gzpayload")
+cp ${abs_out}/tinvest-snapshot-linux-binary %{buildroot}/opt/tinvest-snapshot/tinvest-snapshot
+chmod 755 %{buildroot}/opt/tinvest-snapshot/tinvest-snapshot
+ln -sf /opt/tinvest-snapshot/tinvest-snapshot %{buildroot}/usr/local/bin/tinvest-snapshot
+cp ${abs_src}/config.example.json %{buildroot}/opt/tinvest-snapshot/
+cp ${abs_src}/README.md %{buildroot}/opt/tinvest-snapshot/
+cp ${abs_src}/README.md %{buildroot}/usr/share/doc/tinvest-snapshot/
+gzip -cn9 ${abs_src}/CHANGELOG.md > %{buildroot}/usr/share/doc/tinvest-snapshot/changelog.gz 2>/dev/null || true
+cp ${abs_src}/assets/tinvest-snapshot.desktop %{buildroot}/usr/share/applications/
+cp ${abs_src}/assets/icon_128.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/tinvest-snapshot.png
 
-	# Total installed size
-	local inst_size
-	inst_size=$(du -sk "$stage" | cut -f1)
+%files
+/opt/tinvest-snapshot/tinvest-snapshot
+/opt/tinvest-snapshot/config.example.json
+/opt/tinvest-snapshot/README.md
+/usr/local/bin/tinvest-snapshot
+/usr/share/doc/tinvest-snapshot/README.md
+/usr/share/doc/tinvest-snapshot/changelog.gz
+/usr/share/applications/tinvest-snapshot.desktop
+/usr/share/icons/hicolor/128x128/apps/tinvest-snapshot.png
+SPEC
 
-	# Build RPM header and lead
-	local rpmbin="$OUT/$pkg"
-	_build_rpm_binary "$version" "$inst_size" "$payload_size" "$gz_size" "$gzpayload" "$rpmbin"
+	# Build RPM using rpmbuild
+	if rpmbuild -bb --define "_topdir $rpmbuild_root" \
+		--define "_rpmfilename %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
+		"$rpmbuild_root/SPECS/tinvest-snapshot.spec" 2>&1; then
+		# Copy RPM to dist
+		local built_rpm
+		built_rpm=$(find "$rpmbuild_root/RPMS" -name "*.rpm" | head -1)
+		if [ -n "$built_rpm" ] && [ -f "$built_rpm" ]; then
+			cp "$built_rpm" "$OUT/$pkg"
+			echo "  $OUT/$pkg"
+		else
+			echo "  [ERROR] rpmbuild succeeded but no RPM found"
+			return 1
+		fi
+	else
+		echo "  [ERROR] rpmbuild failed"
+		return 1
+	fi
 
-	rm -f "$gzpayload" "$OUT/rpm-payload.cpio" 2>/dev/null || true
-	rm -rf "$stage"
+	rm -rf "$rpmbuild_root"
 }
 
-# Internal: assemble binary RPM file (lead + sig header + header + payload).
-# Uses Python to write the binary RPM header correctly.
-_build_rpm_binary() {
-	local version="$1" inst_size_kb="$2" payload_size="$3" gz_size="$4"
-	local gzpayload="$5" outfile="$6"
-
-	python3 - "$version" "$inst_size_kb" "$payload_size" "$gz_size" "$gzpayload" "$outfile" <<'PYEOF'
-import struct, sys, os
-
-version, inst_size_kb, payload_size, gz_size, gzpayload, outfile = sys.argv[1:7]
-inst_size = int(inst_size_kb) * 1024
-payload_size = int(payload_size)
-
-def write_lead(f, name_ver):
-    """Write RPM v3 lead (96 bytes)."""
-    magic = b'\xed\xab\xee\xdb'           # RPM magic
-    major = b'\x03'                        # v3
-    minor = b'\x00'
-    ptype  = struct.pack('>H', 0)          # 0 = binary
-    archnum = struct.pack('>H', 1)         # 1 = x86_64
-    name = name_ver.ljust(66, b'\x00')[:66]
-    osnum = struct.pack('>H', 1)           # 1 = Linux
-    sigtype = struct.pack('>H', 5)         # 5 = header-style signatures
-    reserved = b'\x00' * 16
-    f.write(magic + major + minor + ptype + archnum + name + osnum + sigtype + reserved)
-
-def write_header(f, entries):
-    """Write an RPM header given a list of (tag, type, value) entries."""
-    # Build index and data store
-    index_data = b''
-    store = b''
-    for tag, dtype, value in entries:
-        offset = len(store)
-        if dtype == 4:  # INT32
-            count = 1
-            data = struct.pack('>i', int(value))
-        elif dtype == 6:  # STRING
-            data = value.encode('utf-8') + b'\x00'
-            count = 1
-        elif dtype == 7:  # BIN
-            data = value if isinstance(value, bytes) else value.encode('utf-8')
-            count = len(data)
-        elif dtype == 8:  # STRING_ARRAY
-            data = b''.join((s.encode('utf-8') + b'\x00' for s in value))
-            count = len(value)
-        elif dtype == 9:  # I18NSTRING
-            data = value.encode('utf-8') + b'\x00'
-            count = 1
-        else:
-            raise ValueError(f'Unknown dtype {dtype}')
-        index_data += struct.pack('>IIII', tag, dtype, offset, count)
-        store += data
-
-    # Header magic + reserved + index count + data size
-    hdr_start = struct.pack('>I', 0x8eade801)  # magic (unsigned)
-    hdr_start += struct.pack('>I', 0)           # reserved
-    hdr_start += struct.pack('>I', len(entries)) # index count
-    hdr_start += struct.pack('>I', len(store))   # data size
-    f.write(hdr_start + index_data + store)
-
-def write_sig_header(f):
-    """Write empty signature header."""
-    f.write(struct.pack('>I', 0x8eade801))
-    f.write(struct.pack('>I', 0))  # reserved
-    f.write(struct.pack('>I', 0))  # index count
-    f.write(struct.pack('>I', 0))  # data size
-
-# Build RPM
-with open(outfile, 'wb') as f:
-    name_ver = f'tinvest-snapshot-{version}-1'.encode('utf-8')
-    write_lead(f, name_ver)
-    write_sig_header(f)
-
-    entries = [
-        (1000, 6, 'tinvest-snapshot'),      # NAME
-        (1001, 6, version),                 # VERSION
-        (1002, 6, '1'),                     # RELEASE
-        (1004, 6, 'T-Invest portfolio snapshot utility'),  # SUMMARY
-        (1005, 9, 'CLI-утилита для получения снимка портфеля Т-Инвестиций, выгрузки операций и инструментов в JSON, CSV и XLSX. Поддерживает GUI (Fyne) и консольный режим.'),  # DESCRIPTION
-        (1009, 4, inst_size),               # SIZE (installed bytes)
-        (1014, 6, 'MIT'),                   # LICENSE
-        (1020, 6, 'https://github.com/svdmitrij/tinvest-snapshot'),  # URL
-        (1021, 6, 'linux'),                 # OS
-        (1022, 6, 'x86_64'),                # ARCH
-        (1046, 4, payload_size),            # ARCHIVESIZE
-        (1064, 6, '4.13.0'),                # RPMVERSION
-        (1124, 6, 'cpio'),                  # PAYLOADFORMAT
-        (1125, 6, 'gzip'),                  # PAYLOADCOMPRESSOR
-        (1126, 6, '9'),                     # PAYLOADFLAGS
-    ]
-    write_header(f, entries)
-
-    # Append gzipped cpio payload
-    with open(gzpayload, 'rb') as p:
-        f.write(p.read())
-
-# Align to 8-byte boundary
-sz = os.path.getsize(outfile)
-if sz % 8 != 0:
-    with open(outfile, 'ab') as f:
-        f.write(b'\x00' * (8 - sz % 8))
-
-print(f'  {outfile} ({os.path.getsize(outfile)} bytes)')
-PYEOF
-}
+# (removed _build_rpm_binary — rpmbuild handles binary assembly)
 
 # ---- MSI package (wixl) ----
 
