@@ -22,7 +22,7 @@ mkdir -p dist
 built=()
 
 if [[ "$target" == "linux" || "$target" == "all" ]]; then
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath \
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
 		-o dist/tinvest-gui-linux-amd64 ./cmd/gui
 	built+=(dist/tinvest-gui-linux-amd64)
 fi
@@ -34,7 +34,7 @@ if [[ "$target" == "windows" || "$target" == "all" ]]; then
 		echo "Установите mingw-w64 или соберите только Linux: $0 linux" >&2
 		exit 3
 	fi
-	CC="$cc" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -trimpath \
+	CC="$cc" CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false \
 		-ldflags '-H=windowsgui' -o dist/tinvest-gui-windows-amd64.exe ./cmd/gui
 	built+=(dist/tinvest-gui-windows-amd64.exe)
 fi

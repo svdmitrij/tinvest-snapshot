@@ -34,10 +34,15 @@ build_deb() {
 	mkdir -p "$stage/usr/share/applications"
 	mkdir -p "$stage/usr/share/icons/hicolor/128x128/apps"
 
-	# Binary + symlink
+	# CLI binary + symlink
 	cp "$OUT/tinvest-snapshot-linux-binary" "$stage/opt/tinvest-snapshot/tinvest-snapshot"
 	chmod 755 "$stage/opt/tinvest-snapshot/tinvest-snapshot"
 	ln -sf /opt/tinvest-snapshot/tinvest-snapshot "$stage/usr/local/bin/tinvest-snapshot"
+
+	# GUI binary + symlink
+	cp "$OUT/tinvest-gui-linux-amd64" "$stage/opt/tinvest-snapshot/tinvest-gui"
+	chmod 755 "$stage/opt/tinvest-snapshot/tinvest-gui"
+	ln -sf /opt/tinvest-snapshot/tinvest-gui "$stage/usr/local/bin/tinvest-gui"
 
 	# Docs
 	cp config.example.json README.md "$stage/opt/tinvest-snapshot/"
@@ -74,7 +79,7 @@ Maintainer: ${maintainer}
 Installed-Size: ${inst_size}
 Section: office
 Priority: optional
-Depends:
+Depends: libgl1, libx11-6
 Description: T-Invest portfolio snapshot utility
  CLI-утилита для получения снимка портфеля Т-Инвестиций,
  выгрузки операций и инструментов в JSON, CSV и XLSX.
@@ -118,6 +123,8 @@ Summary:        T-Invest portfolio snapshot utility
 License:        MIT
 URL:            https://github.com/svdmitrij/tinvest-snapshot
 BuildArch:      x86_64
+AutoReqProv:    no
+Requires:       libglvnd-glx, libX11
 
 %description
 CLI-утилита для получения снимка портфеля Т-Инвестиций,
@@ -134,6 +141,9 @@ mkdir -p %{buildroot}/usr/share/icons/hicolor/128x128/apps
 cp ${abs_out}/tinvest-snapshot-linux-binary %{buildroot}/opt/tinvest-snapshot/tinvest-snapshot
 chmod 755 %{buildroot}/opt/tinvest-snapshot/tinvest-snapshot
 ln -sf /opt/tinvest-snapshot/tinvest-snapshot %{buildroot}/usr/local/bin/tinvest-snapshot
+cp ${abs_out}/tinvest-gui-linux-amd64 %{buildroot}/opt/tinvest-snapshot/tinvest-gui
+chmod 755 %{buildroot}/opt/tinvest-snapshot/tinvest-gui
+ln -sf /opt/tinvest-snapshot/tinvest-gui %{buildroot}/usr/local/bin/tinvest-gui
 cp ${abs_src}/config.example.json %{buildroot}/opt/tinvest-snapshot/
 cp ${abs_src}/README.md %{buildroot}/opt/tinvest-snapshot/
 cp ${abs_src}/README.md %{buildroot}/usr/share/doc/tinvest-snapshot/
@@ -143,9 +153,11 @@ cp ${abs_src}/assets/icon_128.png %{buildroot}/usr/share/icons/hicolor/128x128/a
 
 %files
 /opt/tinvest-snapshot/tinvest-snapshot
+/opt/tinvest-snapshot/tinvest-gui
 /opt/tinvest-snapshot/config.example.json
 /opt/tinvest-snapshot/README.md
 /usr/local/bin/tinvest-snapshot
+/usr/local/bin/tinvest-gui
 /usr/share/doc/tinvest-snapshot/README.md
 /usr/share/doc/tinvest-snapshot/changelog.gz
 /usr/share/applications/tinvest-snapshot.desktop
@@ -194,6 +206,7 @@ build_msi() {
 	mkdir -p "$stage"
 
 	cp "$OUT/tinvest-snapshot-windows-binary" "$stage/tinvest-snapshot.exe"
+	cp "$OUT/tinvest-gui-windows-amd64.exe" "$stage/tinvest-gui.exe"
 	cp config.example.json README.md "$stage/"
 	cp assets/icon.ico "$stage/"
 
@@ -239,8 +252,9 @@ build_msi() {
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="tinvest-snapshot">
-          <Component Id="MainExecutable" Guid="$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || echo "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")">
-            <File Id="ExeFile" Name="tinvest-snapshot.exe" Source="${stage}/tinvest-snapshot.exe" KeyPath="yes" />
+           <Component Id="MainExecutable" Guid="$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || echo "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")">
+            <File Id="GuiFile" Name="tinvest-gui.exe" Source="${stage}/tinvest-gui.exe" KeyPath="yes" />
+            <File Id="ExeFile" Name="tinvest-snapshot.exe" Source="${stage}/tinvest-snapshot.exe" />
             <File Id="ConfigFile" Name="config.example.json" Source="${stage}/config.example.json" />
             <File Id="ReadmeFile" Name="README.md" Source="${stage}/README.md" />
             <File Id="IconFile" Name="icon.ico" Source="${stage}/icon.ico" />
@@ -256,7 +270,7 @@ build_msi() {
             <Shortcut Id="StartMenuLink"
               Name="T-Invest Snapshot"
               Description="Снимок портфеля Т-Инвестиций"
-              Target="[INSTALLFOLDER]tinvest-snapshot.exe"
+              Target="[INSTALLFOLDER]tinvest-gui.exe"
               WorkingDirectory="INSTALLFOLDER"
               Icon="icon.ico" />
             <RemoveFolder Id="RemoveOfficeMenuFolder" On="uninstall" />
@@ -314,6 +328,12 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false \
 	-o "$OUT/tinvest-snapshot-windows-binary" ./cmd/snapshot
 mv "$OUT/tinvest-snapshot-windows-binary" "$OUT/tinvest-snapshot-windows-binary.exe" 2>/dev/null || true
 
+# Build GUI binaries (required for native packages)
+echo "=== Building GUI binaries ==="
+bash scripts/build-gui.sh linux
+echo "=== Building Windows GUI (cross-compile, optional) ==="
+bash scripts/build-gui.sh windows 2>&1 || echo "  [SKIP] Windows GUI: mingw-w64 not available. MSI will not be built."
+
 # Build all package formats
 build_deb "$VERSION"
 build_rpm "$VERSION"
@@ -339,6 +359,7 @@ rm -rf "$OUT/tinvest-snapshot"
 
 # Clean up temporary binaries
 rm -f "$OUT/tinvest-snapshot-linux-binary" "$OUT/tinvest-snapshot-windows-binary.exe"
+rm -f "$OUT/tinvest-gui-linux-amd64" "$OUT/tinvest-gui-windows-amd64.exe"
 
 # SHA256SUMS
 ( cd "$OUT" && sha256sum tinvest-snapshot* > SHA256SUMS.txt )
