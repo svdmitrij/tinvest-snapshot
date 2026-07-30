@@ -205,7 +205,7 @@ build_msi() {
 	rm -rf "$stage"
 	mkdir -p "$stage"
 
-	cp "$OUT/tinvest-snapshot-windows-binary" "$stage/tinvest-snapshot.exe"
+	cp "$OUT/tinvest-snapshot-windows-binary.exe" "$stage/tinvest-snapshot.exe"
 	cp "$OUT/tinvest-gui-windows-amd64.exe" "$stage/tinvest-gui.exe"
 	cp config.example.json README.md "$stage/"
 	cp assets/icon.ico "$stage/"
@@ -241,8 +241,7 @@ build_msi() {
     <Package
       InstallerVersion="200"
       Compressed="yes"
-      InstallScope="perMachine"
-      Platform="x64" />
+       InstallScope="perMachine" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -269,7 +268,7 @@ build_msi() {
           <Component Id="StartMenuShortcut" Guid="$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || echo "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD")">
             <Shortcut Id="StartMenuLink"
               Name="T-Invest Snapshot"
-              Description="Снимок портфеля Т-Инвестиций"
+                             Description="Терминал Т-Инвестиций"
               Target="[INSTALLFOLDER]tinvest-gui.exe"
               WorkingDirectory="INSTALLFOLDER"
               Icon="icon.ico" />
@@ -284,9 +283,6 @@ build_msi() {
       <ComponentRef Id="EnvPath" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
-
-    <UIRef Id="WixUI_InstallDir" />
-    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
   </Product>
 </Wix>
 WIXEOF
