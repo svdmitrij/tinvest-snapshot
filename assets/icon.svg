@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+    <linearGradient id="grid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a2a4a" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#2a2a4a" stop-opacity="0.1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="12" fill="url(#bg)"/>
+
+  <!-- Grid lines -->
+  <line x1="16" y1="24" x2="112" y2="24" stroke="#2a2a4a" stroke-width="0.5" opacity="0.5"/>
+  <line x1="16" y1="44" x2="112" y2="44" stroke="#2a2a4a" stroke-width="0.5" opacity="0.5"/>
+  <line x1="16" y1="64" x2="112" y2="64" stroke="#2a2a4a" stroke-width="0.5" opacity="0.5"/>
+  <line x1="16" y1="84" x2="112" y2="84" stroke="#2a2a4a" stroke-width="0.5" opacity="0.5"/>
+  <line x1="16" y1="104" x2="112" y2="104" stroke="#2a2a4a" stroke-width="0.5" opacity="0.5"/>
+
+  <!-- Candlestick 1 (green/up) -->
+  <line x1="28" y1="32" x2="28" y2="80" stroke="#00d4aa" stroke-width="1.5"/>
+  <rect x="22" y="40" width="12" height="30" fill="#00d4aa" rx="1"/>
+
+  <!-- Candlestick 2 (red/down) -->
+  <line x1="48" y1="28" x2="48" y2="88" stroke="#ff4757" stroke-width="1.5"/>
+  <rect x="42" y="45" width="12" height="35" fill="#ff4757" rx="1"/>
+
+  <!-- Candlestick 3 (green/up, taller) -->
+  <line x1="68" y1="24" x2="68" y2="90" stroke="#00d4aa" stroke-width="1.5"/>
+  <rect x="62" y="30" width="12" height="35" fill="#00d4aa" rx="1"/>
+
+  <!-- Candlestick 4 (green/up) -->
+  <line x1="88" y1="30" x2="88" y2="78" stroke="#00d4aa" stroke-width="1.5"/>
+  <rect x="82" y="38" width="12" height="25" fill="#00d4aa" rx="1"/>
+
+  <!-- Candlestick 5 (red/down, small) -->
+  <line x1="108" y1="38" x2="108" y2="72" stroke="#ff4757" stroke-width="1.5"/>
+  <rect x="102" y="48" width="12" height="14" fill="#ff4757" rx="1"/>
+
+  <!-- Trend line (dashed, rising) -->
+  <line x1="28" y1="74" x2="108" y2="44" stroke="#ffd93d" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.7"/>
+
+  <!-- Moving average line (solid) -->
+  <polyline points="22,68 32,58 42,62 52,52 62,48 72,42 82,50 92,40 102,38 112,34"
+            fill="none" stroke="#4da6ff" stroke-width="1" opacity="0.6"/>
+</svg>
