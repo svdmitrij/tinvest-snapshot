@@ -48,6 +48,13 @@ var translations embed.FS
 //go:embed config.example.json
 var embeddedConfigBytes []byte
 
+//go:embed icon.png
+var iconData []byte
+
+func appIcon() fyne.Resource {
+	return fyne.NewStaticResource("icon", iconData)
+}
+
 type desktop struct {
 	mu                                                             sync.RWMutex
 	window                                                         fyne.Window
@@ -187,6 +194,7 @@ func main() {
 		// (critical for Windows: double-click launch has no console).
 		a := app.NewWithID("ru.dmitry.tinvest-snapshot")
 		w := a.NewWindow("T-Invest")
+		w.SetIcon(appIcon())
 		msg := err.Error()
 		// Keep stderr for console launches, add GUI dialog for desktop.
 		fmt.Fprintln(os.Stderr, msg)
@@ -201,6 +209,7 @@ func main() {
 	a := app.NewWithID("ru.dmitry.tinvest-snapshot")
 	a.Settings().SetTheme(calmTheme{theme.DefaultTheme()})
 	w := a.NewWindow("T-Invest")
+	w.SetIcon(appIcon())
 	cacheDir := filepath.Join(cacheRoot, "tinvest-snapshot")
 	d := &desktop{window: w, configPath: configPath, cachePath: filepath.Join(cacheDir, "catalog.json"), portfolioCachePath: filepath.Join(cacheDir, "portfolio.json"), operationsCachePath: filepath.Join(cacheDir, "operations.json"), cfg: cfg}
 	d.scache, _ = catalog.LoadSegmented(d.cachePath)

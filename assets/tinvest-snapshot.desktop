@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=T-Invest Snapshot
+Comment=Терминал Т-Инвестиций
+Exec=/opt/tinvest-snapshot/tinvest-gui
+Terminal=false
+Categories=Office;Finance;
+Icon=tinvest-snapshot
