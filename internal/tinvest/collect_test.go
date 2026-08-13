@@ -75,7 +75,10 @@ func TestCollectSandbox(t *testing.T) {
 	srv := mockAPI(t)
 	defer srv.Close()
 
-	c := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil)
+	c, err := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Sandbox = true
 
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)

@@ -60,7 +60,11 @@ func run() int {
 	}
 
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
-	client := tinvest.New(cfg.BaseURL(), token, cfg.AppName, cfg.Retries, time.Duration(cfg.RetryDelayMs)*time.Millisecond, logf)
+	client, err := tinvest.New(cfg.BaseURL(), token, cfg.AppName, cfg.Retries, time.Duration(cfg.RetryDelayMs)*time.Millisecond, logf, cfg.TLS_CA_File, cfg.TLS_Insecure_Skip_Verify)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка TLS-конфигурации: %v\n", err)
+		return 2
+	}
 	client.Sandbox = cfg.Sandbox()
 
 	fmt.Printf("Режим: %s. Получение данных из T-Invest API...\n", cfg.Mode)

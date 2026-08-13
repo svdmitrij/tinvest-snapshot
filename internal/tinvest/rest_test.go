@@ -18,8 +18,11 @@ func TestCallRetriesThenFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "tok", "test", 2, time.Millisecond, nil) // 2 retries => 3 attempts
-	err := c.call(context.Background(), "UsersService", "GetAccounts", struct{}{}, &getAccountsResponse{})
+	c, err := New(srv.URL, "tok", "test", 2, time.Millisecond, nil, "", false) // 2 retries => 3 attempts
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.call(context.Background(), "UsersService", "GetAccounts", struct{}{}, &getAccountsResponse{})
 	if err == nil {
 		t.Fatal("expected error after exhausting attempts")
 	}
@@ -40,7 +43,10 @@ func TestCallSendsBearerTokenInHeaderOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, token, "test", 0, time.Millisecond, nil)
+	c, err := New(srv.URL, token, "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.Accounts(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +69,10 @@ func TestCallSucceedsAfterTransientError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "tok", "test", 3, time.Millisecond, nil)
+	c, err := New(srv.URL, "tok", "test", 3, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.Accounts(context.Background()); err != nil {
 		t.Fatalf("expected success on retry, got %v", err)
 	}

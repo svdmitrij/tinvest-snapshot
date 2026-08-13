@@ -62,6 +62,15 @@ type Config struct {
 	FontScaleOperations int `json:"font_scale_operations,omitempty"`
 	// FontScaleInstruments sets the font scale for the Instruments tab in percent (60-200, default 100).
 	FontScaleInstruments int `json:"font_scale_instruments,omitempty"`
+	// TLS_CA_File is an optional path to a PEM file containing trusted CA
+	// certificates. When set, it is used as the root CA pool for TLS
+	// connections to the T-Invest API. Useful when the binary is built with
+	// CGO_ENABLED=0 and cannot access the system CA store.
+	TLS_CA_File string `json:"tls_ca_file,omitempty"`
+	// TLS_Insecure_Skip_Verify, when true, disables verification of the
+	// TLS certificate presented by the API server. Use only as a
+	// temporary workaround; prefer tls_ca_file for production.
+	TLS_Insecure_Skip_Verify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 // Load reads and validates the configuration from path, applying defaults.

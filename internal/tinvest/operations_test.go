@@ -52,7 +52,10 @@ func TestCollectOperationsPaginatesAndMaps(t *testing.T) {
 	srv := operationsMock(t)
 	defer srv.Close()
 
-	c := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil)
+	c, err := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Sandbox = true
 
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -98,7 +101,10 @@ func TestCollectOperationsPerAccountOpenedDate(t *testing.T) {
 	srv := operationsMock(t)
 	defer srv.Close()
 
-	c := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil)
+	c, err := New(srv.URL, "test-token", "test", 1, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Sandbox = true
 
 	to := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
