@@ -186,6 +186,11 @@ func TestLoadValidatesTLSCAFile(t *testing.T) {
 	if _, err := Load(missingConfig); err == nil {
 		t.Fatal("Load accepted missing TLS CA file")
 	}
+
+	unreadableConfig := writeTemp(t, `{"token":"x","tls_ca_file":`+strconv.Quote(t.TempDir())+`}`)
+	if _, err := Load(unreadableConfig); err == nil {
+		t.Fatal("Load accepted unreadable TLS CA path")
+	}
 }
 
 func writeTestCAPEM(t *testing.T) string {

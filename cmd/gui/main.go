@@ -2165,7 +2165,7 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	// TLS settings
 	tlsCAFile := widget.NewEntry()
 	tlsCAFile.SetText(d.cfg.TLS_CA_File)
-	tlsCAFile.SetPlaceHolder("/usr/local/share/ca-certificates/russian-trusted/russian_trusted_sub_ca_pem.crt")
+	tlsCAFile.SetPlaceHolder("/usr/local/share/ca-certificates/russian-trusted/russian_trusted_root_ca_pem.crt")
 	tlsCAHint := widget.NewLabelWithStyle("i "+d.tr("tls_ca_hint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 	tlsCAHintContainer := container.NewVBox(tlsCAFile, tlsCAHint)
 	tlsInsecure := widget.NewCheck(d.tr("tls_insecure_skip_verify"), nil)
