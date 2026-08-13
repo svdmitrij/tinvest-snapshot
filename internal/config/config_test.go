@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -161,4 +164,38 @@ func TestSaveRestoresIndependentScales(t *testing.T) {
 	if err != nil || got.FontScalePortfolio != 80 || got.FontScaleOperations != 120 || got.FontScaleInstruments != 150 {
 		t.Fatalf("scales = %#v, %v", got, err)
 	}
+}
+
+func TestLoadValidatesTLSCAFile(t *testing.T) {
+	validCA := writeTestCAPEM(t)
+	validConfig := writeTemp(t, `{"token":"x","tls_ca_file":`+strconv.Quote(validCA)+`}`)
+	if _, err := Load(validConfig); err != nil {
+		t.Fatalf("Load valid CA file: %v", err)
+	}
+
+	invalidCA := filepath.Join(t.TempDir(), "invalid-ca.pem")
+	if err := os.WriteFile(invalidCA, []byte("not a PEM certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidConfig := writeTemp(t, `{"token":"x","tls_ca_file":`+strconv.Quote(invalidCA)+`}`)
+	if _, err := Load(invalidConfig); err == nil {
+		t.Fatal("Load accepted invalid TLS CA file")
+	}
+
+	missingConfig := writeTemp(t, `{"token":"x","tls_ca_file":`+strconv.Quote(filepath.Join(t.TempDir(), "missing-ca.pem"))+`}`)
+	if _, err := Load(missingConfig); err == nil {
+		t.Fatal("Load accepted missing TLS CA file")
+	}
+}
+
+func writeTestCAPEM(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(path, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

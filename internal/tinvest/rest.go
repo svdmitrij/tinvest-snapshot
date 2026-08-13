@@ -133,8 +133,7 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 			return nil, fmt.Errorf("не удалось разобрать CA-файл %q: нет валидных PEM-сертификатов", caPEMPath)
 		}
 		transport.TLSClientConfig.RootCAs = caCertPool
-	}
-	if insecureSkipVerify {
+	} else if insecureSkipVerify {
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 	return &Client{
