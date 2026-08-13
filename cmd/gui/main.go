@@ -2175,15 +2175,24 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	tlsCAFile := widget.NewEntry()
 	tlsCAFile.SetText(d.cfg.TLS_CA_File)
 	tlsCAFile.SetPlaceHolder("/usr/local/share/ca-certificates/russian-trusted/russian_trusted_sub_ca_pem.crt")
-	tlsCAHint := widget.NewLabelWithStyle("i" + " " + d.tr("tls_ca_hint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
-	tlsCAFileBox := container.NewBorder(nil, tlsCAHint, nil, nil, tlsCAFile)
-	tlsInsecure := widget.NewCheck(d.tr("tls_insecure_hint"), nil)
+	tlsCAHint := widget.NewLabelWithStyle("i "+d.tr("tls_ca_hint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+	tlsInsecure := widget.NewCheck(d.tr("tls_insecure_skip_verify"), nil)
 	tlsInsecure.SetChecked(d.cfg.TLS_Insecure_Skip_Verify)
-	tlsForm := widget.NewForm(
-		widget.NewFormItem(d.tr("tls_ca_file"), tlsCAFileBox),
-		widget.NewFormItem(d.tr("tls_insecure_skip_verify"), tlsInsecure),
+	form := widget.NewForm(
+		widget.NewFormItem(d.tr("mode"), mode),
+		widget.NewFormItem(d.tr("token_env"), tokenEnv),
+		widget.NewFormItem(d.tr("token_value"), token),
+		widget.NewFormItem(d.tr("reports"), reports),
+		widget.NewFormItem(d.tr("target_currency"), target),
+		widget.NewFormItem(d.tr("retries"), retries),
+		widget.NewFormItem(d.tr("retry_delay"), delay),
+		widget.NewFormItem(d.tr("catalog_ttl"), ttl),
+		widget.NewFormItem(d.tr("instrument_load_timeout"), loadTimeout),
+		widget.NewFormItem(d.tr("portfolio_load_timeout"), portfolioTimeout),
+		widget.NewFormItem(d.tr("language"), lang),
+		widget.NewFormItem(d.tr("timezone"), tz),
+		widget.NewFormItem(d.tr("tls_ca_file"), tlsCAFile),
 	)
-	form := widget.NewForm(widget.NewFormItem(d.tr("mode"), mode), widget.NewFormItem(d.tr("token_env"), tokenEnv), widget.NewFormItem(d.tr("token_value"), token), widget.NewFormItem(d.tr("reports"), reports), widget.NewFormItem(d.tr("target_currency"), target), widget.NewFormItem(d.tr("retries"), retries), widget.NewFormItem(d.tr("retry_delay"), delay), widget.NewFormItem(d.tr("catalog_ttl"), ttl), widget.NewFormItem(d.tr("instrument_load_timeout"), loadTimeout), widget.NewFormItem(d.tr("portfolio_load_timeout"), portfolioTimeout), widget.NewFormItem(d.tr("language"), lang), widget.NewFormItem(d.tr("timezone"), tz))
 	form.OnSubmit = func() {
 		c := *d.cfg
 		c.Mode = mode.Selected
@@ -2200,17 +2209,6 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		if off, ok := tzLabels[tz.Selected]; ok {
 			c.TimezoneOffset = &off
 		}
-		if e := c.Save(d.configPath); e != nil {
-			showError(e, d.window)
-			return
-		}
-		d.cfg = &c
-		d.loadText()
-		d.build()
-		dialog.ShowInformation(d.tr("settings"), d.tr("saved"), d.window)
-	}
-	tlsForm.OnSubmit = func() {
-		c := *d.cfg
 		c.TLS_CA_File = tlsCAFile.Text
 		c.TLS_Insecure_Skip_Verify = tlsInsecure.Checked
 		if e := c.Save(d.configPath); e != nil {
@@ -2222,14 +2220,10 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		d.build()
 		dialog.ShowInformation(d.tr("settings"), d.tr("saved"), d.window)
 	}
-	tlsApplyBtn := widget.NewButton(d.tr("apply"), func() {
-		tlsForm.OnSubmit()
-	})
 	return container.NewVBox(
 		container.New(widthFraction{frac: 0.98}, form),
 		widget.NewSeparator(),
-		container.New(widthFraction{frac: 0.98}, tlsForm),
-		container.NewBorder(nil, nil, nil, nil, tlsApplyBtn),
+		container.New(widthFraction{frac: 0.98}, container.NewVBox(tlsCAHint, tlsInsecure)),
 	)
 }
 
