@@ -2167,8 +2167,10 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	tlsCAFile.SetText(d.cfg.TLS_CA_File)
 	tlsCAFile.SetPlaceHolder("/usr/local/share/ca-certificates/russian-trusted/russian_trusted_sub_ca_pem.crt")
 	tlsCAHint := widget.NewLabelWithStyle("i "+d.tr("tls_ca_hint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+	tlsCAHintContainer := container.NewVBox(tlsCAFile, tlsCAHint)
 	tlsInsecure := widget.NewCheck(d.tr("tls_insecure_skip_verify"), nil)
 	tlsInsecure.SetChecked(d.cfg.TLS_Insecure_Skip_Verify)
+	tlsInsecureContainer := container.NewVBox(tlsInsecure)
 	form := widget.NewForm(
 		widget.NewFormItem(d.tr("mode"), mode),
 		widget.NewFormItem(d.tr("token_env"), tokenEnv),
@@ -2182,7 +2184,8 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 		widget.NewFormItem(d.tr("portfolio_load_timeout"), portfolioTimeout),
 		widget.NewFormItem(d.tr("language"), lang),
 		widget.NewFormItem(d.tr("timezone"), tz),
-		widget.NewFormItem(d.tr("tls_ca_file"), tlsCAFile),
+		widget.NewFormItem(d.tr("tls_ca_file"), tlsCAHintContainer),
+		widget.NewFormItem(d.tr("tls_insecure_skip_verify"), tlsInsecureContainer),
 	)
 	form.OnSubmit = func() {
 		c := *d.cfg
@@ -2213,8 +2216,6 @@ func (d *desktop) settingsTab() fyne.CanvasObject {
 	}
 	return container.NewVBox(
 		container.New(widthFraction{frac: 0.98}, form),
-		widget.NewSeparator(),
-		container.New(widthFraction{frac: 0.98}, container.NewVBox(tlsCAHint, tlsInsecure)),
 	)
 }
 
