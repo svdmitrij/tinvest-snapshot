@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -189,6 +190,15 @@ func (c *Config) validate() error {
 	}
 	if c.Token == "" && c.TokenEnv == "" {
 		return fmt.Errorf("не задан источник токена: укажите token или token_env")
+	}
+	if c.TLS_CA_File != "" {
+		caCert, err := os.ReadFile(c.TLS_CA_File)
+		if err != nil {
+			return fmt.Errorf("не удалось прочитать CA-файл %q: %w", c.TLS_CA_File, err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(caCert) {
+			return fmt.Errorf("не удалось разобрать CA-файл %q: нет валидных PEM-сертификатов", c.TLS_CA_File)
+		}
 	}
 	return nil
 }

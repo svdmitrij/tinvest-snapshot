@@ -2,8 +2,11 @@ package tinvest
 
 import (
 	"context"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -79,4 +82,35 @@ func TestCallSucceedsAfterTransientError(t *testing.T) {
 	if atomic.LoadInt32(&hits) != 2 {
 		t.Errorf("attempts = %d, want 2", atomic.LoadInt32(&hits))
 	}
+}
+
+func TestNewPrefersCAFileOverInsecureSkipVerify(t *testing.T) {
+	caFile := writeTestCAPEM(t)
+	client, err := New("https://example.test", "tok", "test", 0, time.Millisecond, nil, caFile, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transport, ok := client.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.http.Transport)
+	}
+	if transport.TLSClientConfig.RootCAs == nil {
+		t.Fatal("RootCAs is nil for configured TLS CA file")
+	}
+	if transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify is enabled despite configured TLS CA file")
+	}
+}
+
+func writeTestCAPEM(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(path, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
