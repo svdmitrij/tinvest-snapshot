@@ -1061,7 +1061,10 @@ func (d *desktop) client() (*tinvest.Client, error) {
 	if e != nil {
 		return nil, e
 	}
-	c := tinvest.New(d.cfg.BaseURL(), token, d.cfg.AppName, d.cfg.Retries, time.Duration(d.cfg.RetryDelayMs)*time.Millisecond, nil)
+	c, err := tinvest.New(d.cfg.BaseURL(), token, d.cfg.AppName, d.cfg.Retries, time.Duration(d.cfg.RetryDelayMs)*time.Millisecond, nil, d.cfg.TLS_CA_File, d.cfg.TLS_Insecure_Skip_Verify)
+	if err != nil {
+		return nil, err
+	}
 	c.Sandbox = d.cfg.Sandbox()
 	return c, nil
 }

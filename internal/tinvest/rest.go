@@ -3,10 +3,13 @@ package tinvest
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -112,15 +115,33 @@ func (c *Client) extendEnrichmentCooldown(delay time.Duration) {
 }
 
 // New builds a client. delay is the base linear backoff between attempts.
-func New(base, token, appName string, retries int, delay time.Duration, log Logf) *Client {
+// caPEMPath is an optional path to a PEM file with trusted CA certificates.
+// If non-empty, it is loaded and set as the TLS root CA pool.
+// insecureSkipVerify controls whether the server certificate is verified.
+func New(base, token, appName string, retries int, delay time.Duration, log Logf, caPEMPath string, insecureSkipVerify bool) (*Client, error) {
 	if log == nil {
 		log = func(string, ...any) {}
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{}}
+	if caPEMPath != "" {
+		caCert, err := os.ReadFile(caPEMPath)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось прочитать CA-файл %q: %w", caPEMPath, err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("не удалось разобрать CA-файл %q: нет валидных PEM-сертификатов", caPEMPath)
+		}
+		transport.TLSClientConfig.RootCAs = caCertPool
+	}
+	if insecureSkipVerify {
+		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 	return &Client{
 		base:               base,
 		token:              token,
 		appName:            appName,
-		http:               &http.Client{Timeout: 30 * time.Second},
+		http:               &http.Client{Timeout: 30 * time.Second, Transport: transport},
 		retries:            retries,
 		delay:              delay,
 		log:                log,
@@ -129,7 +150,7 @@ func New(base, token, appName string, retries int, delay time.Duration, log Logf
 		bondShortCache:     map[string]*bond{},
 		bCoalesce:          map[string]chan struct{}{},
 		enrichmentInterval: defaultEnrichmentInterval,
-	}
+	}, nil
 }
 
 // APIError describes a non-2xx response. It never contains the token.

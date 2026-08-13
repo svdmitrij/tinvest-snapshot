@@ -12,5 +12,7 @@
   "portfolio_load_timeout_seconds": 180,
   "font_scale_portfolio": 100,
   "font_scale_operations": 100,
-  "font_scale_instruments": 100
+  "font_scale_instruments": 100,
+  "tls_ca_file": "",
+  "tls_insecure_skip_verify": false
 }
