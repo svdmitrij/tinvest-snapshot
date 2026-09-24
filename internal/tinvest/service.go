@@ -107,7 +107,9 @@ func formatLastPrice(item catalog.Instrument, price lastPrice) string {
 }
 
 // EnrichCatalog fills coupon and dividend fields for a locally narrowed set.
-func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time) ([]catalog.Instrument, error) {
+// When non-nil, onProgress is called sequentially from the caller's goroutine
+// with (completed, total) after each instrument finishes, success or failure.
+func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time, onProgress ProgressFunc) ([]catalog.Instrument, error) {
 	out := append([]catalog.Instrument(nil), items...)
 	// The three enrichment endpoints share a restrictive API quota. A small
 	// bounded pool avoids a retry storm while completing a full catalog within
@@ -157,8 +159,11 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 			out[i].Enriched = true
 		}(i)
 	}
-	for i := 0; i < len(out); i++ {
+	for i := range len(out) {
 		<-done
+		if onProgress != nil {
+			onProgress(i+1, len(out))
+		}
 	}
 	if count := int(failed.Load()); count > 0 {
 		return out, &EnrichmentError{Failed: count, Cause: ctx.Err()}

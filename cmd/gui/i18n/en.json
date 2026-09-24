@@ -1,7 +1,7 @@
 {
   "title":"T-Invest Portfolio","portfolio":"Portfolio","operations":"Operations","instruments":"Instruments","settings":"Settings",
   "refresh":"Refresh","export":"Export","export_all":"Export reports (JSON/CSV/XLSX)","export_title":"Export","refresh_first":"Refresh data first",
-  "search":"Search","search_label":"Search in table:","filter_label":"Column filter:","filter_column":"Column","filter_operation":"Operation","group_label":"Group by","value":"Value","loading":"Loading…","loading_ops":"Loading operations…",
+  "search":"Search","search_label":"Search in table:","filter_label":"Column filter:","filter_column":"Column","filter_operation":"Operation","group_label":"Group by","value":"Value","loading_portfolio":"Portfolio","loading_operations":"Operations","loading_bond_card":"Bond details","loading_enrichment":"Instrument enrichment","loading_instruments_all":"Instruments list",
   "error":"Error","retry":"Retry","save":"Save","saved":"Saved","group":"Grouping","all":"All","details":"Instrument details","find_next":"Find next","reset_all":"Reset all",
   "from":"Period from","to":"Period to","table":"Table","currency":"Currency","exchange":"Exchange","sector":"Sector","rate_from":"Coupon rate from, %","rate_to":"Coupon rate to, %","maturity_from":"Maturity from","maturity_to":"Maturity to","reset_filters":"Reset filters","coupon_month":"Next coupon month",
   "cap_type":"Instrument type","cap_risk":"Risk level","cap_frequency":"Coupon frequency","cap_coupon_type":"Coupon type","cap_dividends":"Dividends in 12 months","no_conversion":"No conversion",
