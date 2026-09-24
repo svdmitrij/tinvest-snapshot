@@ -232,6 +232,21 @@ Desktop-приложение и консольная утилита для Т-И
 
 ## Установка
 
+### Makefile
+
+Единая точка входа для сборки, тестов и запуска (полный список — `make help`):
+
+```
+make            # все бинары (CLI + GUI) в dist/
+make test       # полный набор тестов
+make run-gui    # запуск через go run
+make deb        # только .deb-пакет
+make msi        # MSI-инсталлятор для Windows (пропускается, если нет wixl/mingw-w64)
+make dist       # полный набор релизных артефактов + SHA256SUMS.txt
+```
+
+Отдельные форматы можно собирать и напрямую: `./scripts/package.sh [VERSION] deb,rpm,msi,tar,zip`.
+
 ### Сборка GUI
 
 Собрать GUI из исходников (Linux, требуется Go 1.25+, CGO и заголовки X11/OpenGL):

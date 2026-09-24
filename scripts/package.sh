@@ -5,11 +5,21 @@
 # Each archive contains the binary, config.example.json, README.md.
 # Native packages (deb, rpm, msi) also include desktop integration
 # (desktop file, icons, Start Menu shortcuts).
+#
+# Usage: scripts/package.sh [VERSION] [FORMATS]
+#   VERSION defaults to `git describe --tags`; FORMATS is "all" or a comma-
+#   separated list of deb,rpm,msi,tar,zip.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 VERSION="${1:-$(git describe --tags --always 2>/dev/null || echo dev)}"
 OUT="dist"
+FORMATS="${2:-all}"
+if [[ "$FORMATS" == "all" ]]; then
+	FORMATS="deb,rpm,msi,tar,zip"
+fi
+
+want() { case ",$FORMATS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
@@ -106,6 +116,11 @@ build_rpm() {
 	local pkg="tinvest-snapshot-${version}-1.x86_64.rpm"
 	echo "=== Building $pkg ==="
 
+	if ! command -v rpmbuild >/dev/null 2>&1; then
+		echo "  [SKIP] rpmbuild not installed. Install with: sudo apt install rpm"
+		return 0
+	fi
+
 	local abs_out
 	abs_out=$(cd "$OUT" && pwd)
 	local abs_src
@@ -198,6 +213,11 @@ build_msi() {
 	if ! command -v wixl >/dev/null 2>&1; then
 		echo "  [SKIP] wixl not installed (msitools package). Install with: sudo apt install msitools"
 		echo "  [SKIP] The Windows .exe is still available as zip/tar.gz."
+		return 0
+	fi
+
+	if [[ ! -f "$OUT/tinvest-snapshot-windows-binary.exe" || ! -f "$OUT/tinvest-gui-windows-amd64.exe" ]]; then
+		echo "  [SKIP] Windows binaries not built (mingw-w64 unavailable) - MSI skipped."
 		return 0
 	fi
 
@@ -330,35 +350,44 @@ bash scripts/build-gui.sh linux
 echo "=== Building Windows GUI (cross-compile, optional) ==="
 bash scripts/build-gui.sh windows 2>&1 || echo "  [SKIP] Windows GUI: mingw-w64 not available. MSI will not be built."
 
-# Build all package formats
-build_deb "$VERSION"
-build_rpm "$VERSION"
-build_msi "$VERSION"
+# Build the requested package formats
+if want deb; then build_deb "$VERSION"; fi
+if want rpm; then build_rpm "$VERSION"; fi
+if want msi; then build_msi "$VERSION"; fi
 
-# Also build the existing tar.gz/zip from the pre-built binaries
-echo "=== Packaging tar.gz / zip ==="
-mkdir -p "$OUT/tinvest-snapshot"
-cp "$OUT/tinvest-snapshot-linux-binary" "$OUT/tinvest-snapshot/tinvest-snapshot"
-cp config.example.json README.md "$OUT/tinvest-snapshot/"
-( cd "$OUT" && tar -czf "tinvest-snapshot-${VERSION}-linux-amd64.tar.gz" tinvest-snapshot )
-rm -rf "$OUT/tinvest-snapshot"
-
-mkdir -p "$OUT/tinvest-snapshot"
-cp "$OUT/tinvest-snapshot-windows-binary.exe" "$OUT/tinvest-snapshot/tinvest-snapshot.exe" 2>/dev/null || true
-cp config.example.json README.md "$OUT/tinvest-snapshot/"
-if command -v zip >/dev/null 2>&1; then
-	( cd "$OUT" && zip -qr "tinvest-snapshot-${VERSION}-windows-amd64.zip" tinvest-snapshot )
-else
-	( cd "$OUT" && tar -czf "tinvest-snapshot-${VERSION}-windows-amd64.tar.gz" tinvest-snapshot )
+# Also build the requested archives from the pre-built binaries
+if want tar; then
+	echo "=== Building Linux archive ==="
+	mkdir -p "$OUT/tinvest-snapshot"
+	cp "$OUT/tinvest-snapshot-linux-binary" "$OUT/tinvest-snapshot/tinvest-snapshot"
+	cp config.example.json README.md "$OUT/tinvest-snapshot/"
+	( cd "$OUT" && tar -czf "tinvest-snapshot-${VERSION}-linux-amd64.tar.gz" tinvest-snapshot )
+	rm -rf "$OUT/tinvest-snapshot"
 fi
-rm -rf "$OUT/tinvest-snapshot"
+
+if want zip; then
+	echo "=== Building Windows archive ==="
+	mkdir -p "$OUT/tinvest-snapshot"
+	cp "$OUT/tinvest-snapshot-windows-binary.exe" "$OUT/tinvest-snapshot/tinvest-snapshot.exe" 2>/dev/null || true
+	cp config.example.json README.md "$OUT/tinvest-snapshot/"
+	if command -v zip >/dev/null 2>&1; then
+		( cd "$OUT" && zip -qr "tinvest-snapshot-${VERSION}-windows-amd64.zip" tinvest-snapshot )
+	else
+		( cd "$OUT" && tar -czf "tinvest-snapshot-${VERSION}-windows-amd64.tar.gz" tinvest-snapshot )
+	fi
+	rm -rf "$OUT/tinvest-snapshot"
+fi
 
 # Clean up temporary binaries
 rm -f "$OUT/tinvest-snapshot-linux-binary" "$OUT/tinvest-snapshot-windows-binary.exe"
 rm -f "$OUT/tinvest-gui-linux-amd64" "$OUT/tinvest-gui-windows-amd64.exe"
 
-# SHA256SUMS
-( cd "$OUT" && sha256sum tinvest-snapshot* > SHA256SUMS.txt )
+# SHA256SUMS (only if artifacts were produced)
+if ls "$OUT"/tinvest-snapshot* >/dev/null 2>&1; then
+	( cd "$OUT" && sha256sum tinvest-snapshot* > SHA256SUMS.txt )
+else
+	echo "No release artifacts produced - nothing to checksum."
+fi
 
 echo ""
 echo "Release artifacts (version ${VERSION}):"
