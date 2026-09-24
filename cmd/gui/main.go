@@ -1852,18 +1852,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
 				client.Catalog(ctx, now, func(kind string, items []catalog.Instrument, err error) {
-					muErrs.Lock()
-					done++
-					cur := done
-					muErrs.Unlock()
-					d.setBusyProgress("instruments-refresh-all", cur, len(instrumentTypes))
-					if err != nil {
-						muErrs.Lock()
-						failed = append(failed, kind)
-						muErrs.Unlock()
-						return
-					}
-					if kind == "bond" && len(items) > 0 {
+					// A type counts as loaded only after its heavy work — bond enrichment and cache persistence — finishes; otherwise the footer would reach 100% while details are still being fetched.
+					if err == nil && kind == "bond" && len(items) > 0 {
 						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now, nil)
 						byUID := make(map[string]catalog.Instrument, len(enriched))
 						for _, it := range enriched {
@@ -1884,16 +1874,28 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 							muErrs.Unlock()
 						}
 					}
+
 					d.mu.Lock()
-					if d.scache == nil {
-						d.scache = &catalog.SegmentedCache{}
-					}
-					d.scache.Mode = d.cfg.Mode
-					d.scache.Set(kind, items, now)
-					if err := d.scache.SaveSegmented(d.cachePath); err != nil && saveErr == nil {
-						saveErr = err
+					if err == nil {
+						if d.scache == nil {
+							d.scache = &catalog.SegmentedCache{}
+						}
+						d.scache.Mode = d.cfg.Mode
+						d.scache.Set(kind, items, now)
+						if serr := d.scache.SaveSegmented(d.cachePath); serr != nil && saveErr == nil {
+							saveErr = serr
+						}
 					}
 					d.mu.Unlock()
+
+					muErrs.Lock()
+					done++
+					cur := done
+					if err != nil {
+						failed = append(failed, kind)
+					}
+					muErrs.Unlock()
+					d.setBusyProgress("instruments-refresh-all", cur, len(instrumentTypes))
 				})
 				if saveErr != nil {
 					return saveErr
