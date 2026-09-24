@@ -1854,7 +1854,16 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				client.Catalog(ctx, now, func(kind string, items []catalog.Instrument, err error) {
 					// A type counts as loaded only after its heavy work — bond enrichment and cache persistence — finishes; otherwise the footer would reach 100% while details are still being fetched.
 					if err == nil && kind == "bond" && len(items) > 0 {
-						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now, nil)
+						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now, func(cur, total int) {
+							// Bond enrichment is the slow part of this load; report its per-instrument progress as a fraction of this type's share so the footer keeps moving instead of stalling below 100%.
+							if n := len(instrumentTypes); n > 0 && total > 0 {
+								muErrs.Lock()
+								doneNow := done
+								muErrs.Unlock()
+								pct := int((float64(doneNow) + float64(cur)/float64(total)) * 100 / float64(n))
+								d.setBusyProgress("instruments-refresh-all", pct, 100)
+							}
+						})
 						byUID := make(map[string]catalog.Instrument, len(enriched))
 						for _, it := range enriched {
 							byUID[it.UID] = it
