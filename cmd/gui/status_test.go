@@ -4,42 +4,45 @@ package main
 
 import "testing"
 
+const testHeader = "Сейчас обновляется"
+
 func TestBusyTextEmptyWhenNothingRunning(t *testing.T) {
-	if got := busyText(nil); got != "" {
+	if got := busyText(testHeader, nil); got != "" {
 		t.Fatalf("busyText(nil) = %q, want empty", got)
 	}
-	if got := busyText(map[string]busyState{}); got != "" {
+	if got := busyText(testHeader, map[string]busyState{}); got != "" {
 		t.Fatalf("busyText(empty) = %q, want empty", got)
 	}
 }
 
-func TestBusyTextShowsPercentWhenTotalKnown(t *testing.T) {
-	got := busyText(map[string]busyState{
-		"portfolio":       {label: "Портфель", current: 3, total: 5},
-		"instrument-card": {label: "Детализация облигации"},
+func TestBusyTextShowsPrefixAndPercentWhenTotalKnown(t *testing.T) {
+	got := busyText(testHeader, map[string]busyState{
+		"portfolio":       {"Портфель", 3, 5},
+		"instrument-card": {"Детализация облигации", 0, 0},
 	})
-	want := "Детализация облигации; Портфель 60%"
+	want := testHeader + ": Детализация облигации; Портфель 60%"
 	if got != want {
 		t.Fatalf("busyText = %q, want %q", got, want)
 	}
 }
 
 func TestBusyTextListsEveryActiveLoadInStableOrder(t *testing.T) {
-	got := busyText(map[string]busyState{
-		"portfolio":  {label: "Портфель", current: 1, total: 2},
-		"operations": {label: "Операции", current: 2, total: 8},
+	got := busyText(testHeader, map[string]busyState{
+		"portfolio":  {"Портфель", 1, 2},
+		"operations": {"Операции", 2, 8},
 	})
-	want := "Операции 25%; Портфель 50%"
+	want := testHeader + ": Операции 25%; Портфель 50%"
 	if got != want {
 		t.Fatalf("busyText = %q, want %q", got, want)
 	}
 }
 
 func TestBusyTextRoundPercentDown(t *testing.T) {
-	got := busyText(map[string]busyState{
-		"instruments-refresh-all": {label: "Список инструментов", current: 1, total: 3},
+	got := busyText(testHeader, map[string]busyState{
+		"instruments-refresh-all": {"Список инструментов", 1, 3},
 	})
-	if want := "Список инструментов 33%"; got != want {
+	want := testHeader + ": Список инструментов 33%"
+	if got != want {
 		t.Fatalf("busyText = %q, want %q", got, want)
 	}
 }

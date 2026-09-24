@@ -1108,7 +1108,7 @@ func (d *desktop) busy(key, label string, fn func() error) {
 
 func (d *desktop) refreshStatus() {
 	d.refreshMu.Lock()
-	text := busyText(d.refreshing)
+	text := busyText(d.tr("loading_prefix"), d.refreshing)
 	d.refreshMu.Unlock()
 	d.status.SetText(text)
 }
@@ -1128,10 +1128,11 @@ func (d *desktop) setBusyProgress(key string, current, total int) {
 	fyne.Do(func() { d.refreshStatus() })
 }
 
-// busyText renders the footer line: every active load is listed in a stable
-// (key-sorted) order, each with its approximate completion percentage once a
-// total has been reported. It returns "" when nothing is running.
-func busyText(states map[string]busyState) string {
+// busyText renders the footer line under a translated header: every active
+// load is listed in a stable (key-sorted) order, each with its approximate
+// completion percentage once a total has been reported. It returns "" when
+// nothing is running, so an empty prefix never leaks into the status bar.
+func busyText(prefix string, states map[string]busyState) string {
 	if len(states) == 0 {
 		return ""
 	}
@@ -1149,7 +1150,7 @@ func busyText(states map[string]busyState) string {
 		}
 		parts = append(parts, s.label)
 	}
-	return strings.Join(parts, "; ")
+	return prefix + ": " + strings.Join(parts, "; ")
 }
 
 func (d *desktop) loadTimeoutError(scope, setting string, timeout time.Duration) error {
