@@ -129,7 +129,7 @@ func TestEnrichCatalogGetsCouponFromBondEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "BBG00REAL", CouponFrequency: 4, Nominal: "1000 rub"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	items, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "BBG00REAL", CouponFrequency: 4, Nominal: "1000 rub"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestEnrichCatalogUsesUIDForBondEventsAndDividends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "bond-uid", FIGI: "BBG-BOND", MaturityDate: "2030-12-13"}, {Type: "share", UID: "share-uid", FIGI: "BBG-SHARE"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
+	items, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "bond-uid", FIGI: "BBG-BOND", MaturityDate: "2030-12-13"}, {Type: "share", UID: "share-uid", FIGI: "BBG-SHARE"}}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestEnrichCatalogPreservesPartialCouponFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now())
+	got, err := client.EnrichCatalog(context.Background(), []catalog.Instrument{{Type: "bond", UID: "uid", FIGI: "RU000A102LF6"}}, time.Now(), nil)
 	var enrichment *EnrichmentError
 	if !errors.As(err, &enrichment) || enrichment.Failed != 1 {
 		t.Fatalf("partial coupon failure = %v, want one reported failure", err)
@@ -272,7 +272,7 @@ func TestEnrichCatalogPacesBelowInstrumentsServiceQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := client.EnrichCatalog(ctx, items, time.Now())
+	got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 	if err != nil || len(got) != len(items) {
 		t.Fatalf("quota enrichment: items=%d err=%v", len(got), err)
 	}
@@ -315,11 +315,11 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), scaledTimeout)
 	defer cancel()
 	client, err := New(server.URL, "token", "test", 3, quotaWindow, nil, "", false)
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 	client.enrichmentInterval = defaultEnrichmentInterval / 20
-	got, err := client.EnrichCatalog(ctx, items, time.Now())
+	got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 	if err != nil || len(got) != len(items) {
 		t.Fatalf("full quota enrichment: items=%d err=%v", len(got), err)
 	}
@@ -396,7 +396,7 @@ func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 			t.Fatal(err)
 		}
 		client.enrichmentInterval = defaultEnrichmentInterval / 40
-		got, err := client.EnrichCatalog(ctx, items, time.Now())
+		got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected deadline exceeded, got %v", err)
 		}
@@ -416,7 +416,7 @@ func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 		}
 		client.enrichmentInterval = defaultEnrichmentInterval / 40
 		start := time.Now()
-		got, err := client.EnrichCatalog(ctx, items, time.Now())
+		got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 		elapsed := time.Since(start)
 		if err != nil || len(got) != liveBonds {
 			t.Fatalf("live-volume enrichment: items=%d err=%v", len(got), err)
@@ -441,6 +441,43 @@ func TestFormatLastPriceUsesNativeInstrumentFormat(t *testing.T) {
 	for _, tc := range cases {
 		if got := formatLastPrice(catalog.Instrument{Type: tc.kind, Currency: tc.currency}, price); got != tc.want {
 			t.Errorf("%s price = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+func TestEnrichCatalogReportsProgressPerInstrument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if method == "GetBondEvents" {
+			w.Write([]byte(`{"events":[]}`))
+			return
+		}
+		w.Write([]byte(`{"dividends":[]}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "token", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]catalog.Instrument, 5)
+	for i := range items {
+		items[i] = catalog.Instrument{Type: "bond", UID: fmt.Sprintf("uid-%d", i), FIGI: fmt.Sprintf("figi-%d", i)}
+	}
+	var progress []int
+	enriched, err := client.EnrichCatalog(context.Background(), items, time.Now(), func(current, total int) {
+		if total != len(items) {
+			t.Fatalf("progress total = %d, want %d", total, len(items))
+		}
+		progress = append(progress, current)
+	})
+	if err != nil || len(enriched) != len(items) {
+		t.Fatalf("enrichment: items=%d err=%v", len(enriched), err)
+	}
+	if len(progress) != len(items) {
+		t.Fatalf("progress reports = %v, want one per instrument", progress)
+	}
+	for i := range progress {
+		if progress[i] != i+1 {
+			t.Fatalf("progress sequence = %v, want 1..%d in order", progress, len(items))
 		}
 	}
 }

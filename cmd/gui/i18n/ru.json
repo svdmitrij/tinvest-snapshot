@@ -1,7 +1,7 @@
 {
   "title":"T-Invest Портфель","portfolio":"Портфель","operations":"Операции","instruments":"Инструменты","settings":"Настройки",
   "refresh":"Обновить","export":"Экспорт","export_all":"Экспорт отчётов (JSON/CSV/XLSX)","export_title":"Экспорт","refresh_first":"Сначала обновите данные",
-  "search":"Поиск","search_label":"Поиск по таблице:","filter_label":"Фильтр колонки:","filter_column":"Колонка","filter_operation":"Операция","group_label":"Группировать по","value":"Значение","loading":"Загрузка…","loading_ops":"Загрузка операций…",
+  "search":"Поиск","search_label":"Поиск по таблице:","filter_label":"Фильтр колонки:","filter_column":"Колонка","filter_operation":"Операция","group_label":"Группировать по","value":"Значение","loading_portfolio":"Портфель","loading_operations":"Операции","loading_bond_card":"Детализация облигации","loading_enrichment":"Обогащение инструментов","loading_instruments_all":"Список инструментов","loading_prefix":"Сейчас обновляется",
   "error":"Ошибка","retry":"Повторить","save":"Сохранить","saved":"Сохранено","group":"Группировка","all":"Все","details":"Карточка инструмента","find_next":"Найти далее","reset_all":"Сбросить всё",
   "from":"Период с","to":"Период по","table":"Таблица","currency":"Валюта","exchange":"Биржа","sector":"Сектор","rate_from":"Ставка купона от, %","rate_to":"Ставка купона до, %","maturity_from":"Погашение от","maturity_to":"Погашение до","reset_filters":"Сбросить фильтры","coupon_month":"Месяц ближайшего купона",
   "cap_type":"Тип инструмента","cap_risk":"Уровень риска","cap_frequency":"Частота купона","cap_coupon_type":"Тип купона","cap_dividends":"Дивиденды за 12 мес.","no_conversion":"Без пересчёта",

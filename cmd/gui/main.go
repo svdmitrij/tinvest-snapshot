@@ -71,7 +71,15 @@ type desktop struct {
 	resetInstrumentFilters                                         func()
 	instrumentFilterSelects                                        []*widget.Select
 	refreshMu                                                      sync.Mutex
-	refreshing                                                     map[string]string
+	refreshing                                                     map[string]busyState
+}
+
+// busyState describes one in-flight load for the footer status line: what it
+// loads and, when measurable, its approximate progress (total <= 0 = unknown).
+type busyState struct {
+	label   string
+	current int
+	total   int
 }
 
 const refreshTimeout = 30 * time.Second
@@ -1074,14 +1082,14 @@ func (d *desktop) client() (*tinvest.Client, error) {
 func (d *desktop) busy(key, label string, fn func() error) {
 	d.refreshMu.Lock()
 	if d.refreshing == nil {
-		d.refreshing = make(map[string]string)
+		d.refreshing = make(map[string]busyState)
 	}
 	if _, running := d.refreshing[key]; running {
 		d.refreshMu.Unlock()
 		fyne.Do(func() { d.refreshStatus() })
 		return
 	}
-	d.refreshing[key] = label
+	d.refreshing[key] = busyState{label: label}
 	d.refreshMu.Unlock()
 	fyne.Do(func() { d.refreshStatus() })
 	go func() {
@@ -1100,21 +1108,49 @@ func (d *desktop) busy(key, label string, fn func() error) {
 
 func (d *desktop) refreshStatus() {
 	d.refreshMu.Lock()
-	defer d.refreshMu.Unlock()
-	for _, label := range d.refreshing {
-		d.status.SetText(label)
-		return
-	}
-	d.status.SetText("")
+	text := busyText(d.tr("loading_prefix"), d.refreshing)
+	d.refreshMu.Unlock()
+	d.status.SetText(text)
 }
 
-func (d *desktop) setBusyStatus(key, label string) {
+// setBusyProgress updates the approximate progress of an in-flight load. It is
+// safe to call from any goroutine; the footer label refreshes on the UI thread.
+func (d *desktop) setBusyProgress(key string, current, total int) {
 	d.refreshMu.Lock()
-	if _, running := d.refreshing[key]; running {
-		d.refreshing[key] = label
+	if s, running := d.refreshing[key]; running {
+		s.current = current
+		if total > 0 {
+			s.total = total
+		}
+		d.refreshing[key] = s
 	}
 	d.refreshMu.Unlock()
-	d.refreshStatus()
+	fyne.Do(func() { d.refreshStatus() })
+}
+
+// busyText renders the footer line under a translated header: every active
+// load is listed in a stable (key-sorted) order, each with its approximate
+// completion percentage once a total has been reported. It returns "" when
+// nothing is running, so an empty prefix never leaks into the status bar.
+func busyText(prefix string, states map[string]busyState) string {
+	if len(states) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(states))
+	for key := range states {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		s := states[key]
+		if s.total > 0 && s.current >= 0 {
+			parts = append(parts, fmt.Sprintf("%s %d%%", s.label, s.current*100/s.total))
+			continue
+		}
+		parts = append(parts, s.label)
+	}
+	return prefix + ": " + strings.Join(parts, "; ")
 }
 
 func (d *desktop) loadTimeoutError(scope, setting string, timeout time.Duration) error {
@@ -1150,7 +1186,7 @@ func (d *desktop) failedInstrumentTypesError(types []string, cause error, enrich
 	return fmt.Errorf(d.tr("instrument_types_failed_error"), strings.Join(names, ", "))
 }
 func (d *desktop) refreshPortfolio() {
-	d.busy("portfolio", d.tr("loading"), func() error {
+	d.busy("portfolio", d.tr("loading_portfolio"), func() error {
 		now := time.Now()
 		c, e := d.client()
 		if e != nil {
@@ -1160,9 +1196,7 @@ func (d *desktop) refreshPortfolio() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		snap, e := c.Collect(ctx, d.cfg.Mode, d.cfg.TargetCurrency, now, func(current, total int) {
-			fyne.Do(func() {
-				d.setBusyStatus("portfolio", fmt.Sprintf("%s (%d/%d)", d.tr("loading"), current, total))
-			})
+			d.setBusyProgress("portfolio", current, total)
 		})
 		if e != nil {
 			if errors.Is(e, context.DeadlineExceeded) {
@@ -1186,7 +1220,7 @@ func (d *desktop) refreshPortfolio() {
 }
 
 func (d *desktop) refreshOperations() {
-	d.busy("operations", d.tr("loading_ops"), func() error {
+	d.busy("operations", d.tr("loading_operations"), func() error {
 		now := time.Now()
 		fromText, toText := dateText(d.from), dateText(d.to)
 		win, err := period.Resolve(fromText, toText, d.cfg.ReportsDir, now)
@@ -1205,7 +1239,7 @@ func (d *desktop) refreshOperations() {
 		ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 		defer cancel()
 		operations, operationPeriod, err := client.CollectOperations(ctx, win.GlobalFrom, win.To, func(current, total int) {
-			fyne.Do(func() { d.setBusyStatus("operations", fmt.Sprintf("%s (%d/%d)", d.tr("loading_ops"), current, total)) })
+			d.setBusyProgress("operations", current, total)
 		})
 		if err != nil {
 			return err
@@ -1398,8 +1432,8 @@ func formatTimeZone(utc string, offset int) string {
 func (d *desktop) showInstrumentCard(row []string) {
 	uid := fieldOf(row, "uid")
 	if uid != "" && fieldOf(row, "type") == "bond" {
-		d.busy("instrument-card", d.tr("loading"), func() error {
-			if e := d.enrichOne(uid); e != nil {
+		d.busy("instrument-card", d.tr("loading_bond_card"), func() error {
+			if e := d.enrichOne(uid, func(current, total int) { d.setBusyProgress("instrument-card", current, total) }); e != nil {
 				return e
 			}
 			d.mu.RLock()
@@ -1543,8 +1577,9 @@ func (d *desktop) instrumentByUID(uid string) (catalog.Instrument, bool) {
 	return catalog.Instrument{}, false
 }
 
-// enrichOne fetches the coupon/event details of a single instrument.
-func (d *desktop) enrichOne(uid string) error {
+// enrichOne fetches the coupon/event details of a single instrument. onProgress
+// reports completion against the total when non-nil.
+func (d *desktop) enrichOne(uid string, onProgress func(current, total int)) error {
 	d.mu.RLock()
 	item, ok := d.instrumentByUID(uid)
 	d.mu.RUnlock()
@@ -1557,7 +1592,7 @@ func (d *desktop) enrichOne(uid string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
-	enriched, err := client.EnrichCatalog(ctx, []catalog.Instrument{item}, time.Now())
+	enriched, err := client.EnrichCatalog(ctx, []catalog.Instrument{item}, time.Now(), onProgress)
 	if err != nil {
 		return err
 	}
@@ -1759,7 +1794,8 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 			if sc == nil || !needsInstrumentEnrichment(currentFilter) || catalogEnriched(sc.AllInstruments()) {
 				return
 			}
-			d.busy(instrumentEnrichmentKey(currentFilter), d.tr("loading"), func() error {
+			key := instrumentEnrichmentKey(currentFilter)
+			d.busy(key, d.tr("loading_enrichment"), func() error {
 				client, err := d.client()
 				if err != nil {
 					return err
@@ -1767,7 +1803,9 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				base := enrichmentFilter(currentFilter)
 				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
-				enriched, err := client.EnrichCatalog(ctx, catalog.Search(sc.AllInstruments(), base), time.Now())
+				enriched, err := client.EnrichCatalog(ctx, catalog.Search(sc.AllInstruments(), base), time.Now(), func(current, total int) {
+					d.setBusyProgress(key, current, total)
+				})
 				byUID := make(map[string]catalog.Instrument, len(enriched))
 				for _, item := range enriched {
 					byUID[item.UID] = item
@@ -1799,7 +1837,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 		fyne.Do(applyFilters)
 		typ := currentFilter.Type // "" means "Все"
 		if typ == "" {
-			d.busy("instruments-refresh-all", d.tr("loading"), func() error {
+			d.busy("instruments-refresh-all", d.tr("loading_instruments_all"), func() error {
 				defer fyne.Do(applyFilters)
 				client, err := d.client()
 				if err != nil {
@@ -1810,17 +1848,22 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				var failed []string
 				var enrichmentFailures int
 				var saveErr error
+				done := 0
 				ctx, cancel := context.WithTimeout(context.Background(), d.instrumentRefreshTimeout())
 				defer cancel()
 				client.Catalog(ctx, now, func(kind string, items []catalog.Instrument, err error) {
-					if err != nil {
-						muErrs.Lock()
-						failed = append(failed, kind)
-						muErrs.Unlock()
-						return
-					}
-					if kind == "bond" && len(items) > 0 {
-						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now)
+					// A type counts as loaded only after its heavy work — bond enrichment and cache persistence — finishes; otherwise the footer would reach 100% while details are still being fetched.
+					if err == nil && kind == "bond" && len(items) > 0 {
+						enriched, e := client.EnrichCatalog(ctx, catalog.Search(items, catalog.Filter{Type: "bond"}), now, func(cur, total int) {
+							// Bond enrichment is the slow part of this load; report its per-instrument progress as a fraction of this type's share so the footer keeps moving instead of stalling below 100%.
+							if n := len(instrumentTypes); n > 0 && total > 0 {
+								muErrs.Lock()
+								doneNow := done
+								muErrs.Unlock()
+								pct := int((float64(doneNow) + float64(cur)/float64(total)) * 100 / float64(n))
+								d.setBusyProgress("instruments-refresh-all", pct, 100)
+							}
+						})
 						byUID := make(map[string]catalog.Instrument, len(enriched))
 						for _, it := range enriched {
 							byUID[it.UID] = it
@@ -1840,16 +1883,28 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 							muErrs.Unlock()
 						}
 					}
+
 					d.mu.Lock()
-					if d.scache == nil {
-						d.scache = &catalog.SegmentedCache{}
-					}
-					d.scache.Mode = d.cfg.Mode
-					d.scache.Set(kind, items, now)
-					if err := d.scache.SaveSegmented(d.cachePath); err != nil && saveErr == nil {
-						saveErr = err
+					if err == nil {
+						if d.scache == nil {
+							d.scache = &catalog.SegmentedCache{}
+						}
+						d.scache.Mode = d.cfg.Mode
+						d.scache.Set(kind, items, now)
+						if serr := d.scache.SaveSegmented(d.cachePath); serr != nil && saveErr == nil {
+							saveErr = serr
+						}
 					}
 					d.mu.Unlock()
+
+					muErrs.Lock()
+					done++
+					cur := done
+					if err != nil {
+						failed = append(failed, kind)
+					}
+					muErrs.Unlock()
+					d.setBusyProgress("instruments-refresh-all", cur, len(instrumentTypes))
 				})
 				if saveErr != nil {
 					return saveErr
@@ -1860,7 +1915,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 				return nil
 			})
 		} else {
-			d.busy("instruments-refresh-"+typ, d.tr("loading"), func() error {
+			d.busy("instruments-refresh-"+typ, d.tr("type_"+typ), func() error {
 				defer fyne.Do(applyFilters)
 				client, err := d.client()
 				if err != nil {
@@ -1882,7 +1937,7 @@ func (d *desktop) instrumentTab() fyne.CanvasObject {
 					return d.catalogError(catErr)
 				}
 				if typ == "bond" && len(catItems) > 0 {
-					enriched, e := client.EnrichCatalog(ctx, catalog.Search(catItems, catalog.Filter{Type: "bond"}), now)
+					enriched, e := client.EnrichCatalog(ctx, catalog.Search(catItems, catalog.Filter{Type: "bond"}), now, nil)
 					byUID := make(map[string]catalog.Instrument, len(enriched))
 					for _, it := range enriched {
 						byUID[it.UID] = it
