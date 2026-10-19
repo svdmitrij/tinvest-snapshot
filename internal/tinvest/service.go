@@ -333,6 +333,11 @@ func (c *Client) trackResolution(uid, figi string, value *instrumentShort, err e
 		c.markUnresolved(uid, figi)
 		return nil, err
 	}
+	// A lookup by FIGI returns the catalog uid, so a record made by a UID-only
+	// call is cleared even when the later call carries only the FIGI.
+	if value != nil && value.UID != "" {
+		uid = value.UID
+	}
 	c.markResolved(uid, figi)
 	return value, nil
 }

@@ -591,16 +591,23 @@ func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
 // TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not
 // by lookup, and only counts instruments whose reference data stayed missing.
 func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
+	// A FIGI lookup returns the catalog uid, which is what lets the counter
+	// reconcile a record made through the UID.
+	catalogUID := map[string]string{"figi-1": "uid-1", "figi-3": "uid-3"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req instrumentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatal(err)
 		}
 		switch req.ID {
-		case "uid-1", "uid-2", "figi-2":
+		case "uid-1", "uid-2", "uid-3", "figi-2":
 			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
 		default:
-			w.Write([]byte(`{"instrument":{"uid":"` + req.ID + `","ticker":"GLRX"}}`))
+			uid := catalogUID[req.ID]
+			if uid == "" {
+				uid = req.ID
+			}
+			w.Write([]byte(`{"instrument":{"uid":"` + uid + `","ticker":"GLRX"}}`))
 		}
 	}))
 	defer srv.Close()
@@ -637,6 +644,20 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	}
 	if got := c.Unresolved(); got != 1 {
 		t.Errorf("unresolved = %d, want the UID-only record cleared by the FIGI resolution", got)
+	}
+	// A record made by a UID-only call is cleared by a later lookup that carries
+	// only the FIGI: the response returns the catalog uid.
+	if _, err := c.InstrumentRef(ctx, "uid-3", ""); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want the UID-only miss counted", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "", "figi-3"); err != nil {
+		t.Fatalf("FIGI-only lookup: %v", err)
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the UID-only record cleared by the FIGI-only lookup", got)
 	}
 	// A bond-data failure leaves the reference fields filled, so it must not be
 	// counted.
