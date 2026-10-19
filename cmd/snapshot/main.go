@@ -115,7 +115,7 @@ func printSummary(snap *model.Snapshot, paths report.Paths, unresolved int) {
 		fmt.Printf("Период операций: %s — %s\n", snap.OperationsPeriod.From, snap.OperationsPeriod.To)
 	}
 	if unresolved > 0 {
-		fmt.Printf("Справочник не получен для %d инструментов — поля тикера/ISIN/названия пусты\n", unresolved)
+		fmt.Printf("Не удалось получить справочные данные для %d инструментов — их поля тикера/ISIN/названия пусты\n", unresolved)
 	}
 	fmt.Println("Файлы:")
 	for _, p := range paths.All() {

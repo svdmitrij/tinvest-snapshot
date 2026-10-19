@@ -62,10 +62,10 @@ func TestCallStillRetriesQuotaError(t *testing.T) {
 
 func TestLimiterWaitsForTheReportedQuotaReset(t *testing.T) {
 	var hits int32
-	var first time.Time
+	first := make(chan time.Time, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&hits, 1) == 1 {
-			first = time.Now()
+			first <- time.Now()
 			w.Header().Set("x-ratelimit-limit", "200, 200;w=60")
 			w.Header().Set("x-ratelimit-remaining", "0")
 			w.Header().Set("x-ratelimit-reset", "1")
@@ -84,7 +84,8 @@ func TestLimiterWaitsForTheReportedQuotaReset(t *testing.T) {
 	if _, err := c.Accounts(context.Background()); err != nil {
 		t.Fatalf("accounts: %v", err)
 	}
-	if elapsed := time.Since(first); elapsed < time.Second {
+	at := <-first
+	if elapsed := time.Since(at); elapsed < time.Second {
 		t.Errorf("second attempt started after %v, want the reported 1s window reset", elapsed)
 	}
 }
@@ -161,5 +162,66 @@ func TestParseQuotaValueHandlesCounterLists(t *testing.T) {
 		if number != tc.number || window != tc.window || ok != tc.ok {
 			t.Errorf("parseQuotaValue(%q) = %d, %v, %v; want %d, %v, %v", tc.value, number, window, ok, tc.number, tc.window, tc.ok)
 		}
+	}
+}
+
+// TestLimiterDoesNotStretchTheWindowPerReservation: once the window budget is
+// exhausted, every reservation must land on the same window deadline instead of
+// a fresh full window counted from its own moment.
+func TestLimiterDoesNotStretchTheWindowPerReservation(t *testing.T) {
+	l := &limiter{interval: 100 * time.Millisecond, limit: 10, remaining: 10, window: time.Second}
+	if err := l.reserve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	l.observe(http.Header{"X-Ratelimit-Remaining": []string{"0"}, "X-Ratelimit-Reset": []string{"1"}})
+
+	start := time.Now()
+	if err := l.reserve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Since(start)
+	if first < 900*time.Millisecond {
+		t.Fatalf("first reservation after exhaustion waited %v, want the window deadline", first)
+	}
+	if err := l.reserve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := time.Since(start)
+	if second > 1500*time.Millisecond {
+		t.Fatalf("second reservation waited %v: the window deadline drifted past the reset", second)
+	}
+}
+
+// TestParseQuotaHeadersBindsCounterToItsOwnWindow: a header with counters for
+// different windows must not mix a count from one window with the window of
+// another.
+func TestParseQuotaHeadersBindsCounterToItsOwnWindow(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-ratelimit-limit", "100;w=1, 5000;w=60")
+	limit, window, _, _, ok := parseQuotaHeaders(headers)
+	if !ok || limit != 100 || window != time.Second {
+		t.Errorf("limit=%d window=%v ok=%v, want 100 with its own 1s window", limit, window, ok)
+	}
+}
+
+// TestQuotaResetIsClamped: an absolute epoch in x-ratelimit-reset must not push
+// the schedule decades out.
+func TestQuotaResetIsClamped(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-ratelimit-reset", "1767000000")
+	_, _, _, reset, ok := parseQuotaHeaders(headers)
+	if !ok || reset != maxQuotaResetSeconds*time.Second {
+		t.Errorf("reset=%v ok=%v, want the %ds clamp", reset, ok, maxQuotaResetSeconds)
+	}
+}
+
+func TestTransientFourXXIsNotPermanent(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusTooEarly} {
+		if (&APIError{Status: status}).Permanent() {
+			t.Errorf("HTTP %d should stay retryable", status)
+		}
+	}
+	if !(&APIError{Status: http.StatusNotFound}).Permanent() {
+		t.Error("HTTP 404 should be permanent")
 	}
 }

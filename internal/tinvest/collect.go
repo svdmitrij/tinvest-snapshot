@@ -158,11 +158,14 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 			got, err := c.InstrumentRef(ctx, it.InstrumentUID, it.Figi)
 			if err != nil {
 				c.log("Не удалось получить справочные данные по инструменту %s: %v", key, err)
+			} else {
+				// Only successes are cached here: the client cache already
+				// memoizes permanent misses, and a transient failure must stay
+				// retryable for the next operation that references the same
+				// instrument.
+				cache[key] = got
+				instr = got
 			}
-			// A permanent miss is stored as nil so the same instrument is not
-			// reported again for every operation that references it.
-			cache[key] = got
-			instr = got
 		}
 		if instr != nil {
 			op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name

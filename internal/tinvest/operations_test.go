@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -115,5 +116,35 @@ func TestCollectOperationsPerAccountOpenedDate(t *testing.T) {
 	// With no global from, the effective start is the account opening date.
 	if period.From != "2020-01-01T00:00:00Z" {
 		t.Errorf("period.From = %q, want account opened date", period.From)
+	}
+}
+
+// TestBuildOperationDoesNotCacheTransientLookupFailure: the local cache may keep
+// permanent misses, but a transient failure must stay retryable for the next
+// operation that references the same instrument.
+func TestBuildOperationDoesNotCacheTransientLookupFailure(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"instrument":{"uid":"u","ticker":"SBER","isin":"RU000","name":"Sberbank"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	cache := map[string]*instrumentShort{}
+	first := c.buildOperation(ctx, apiAccount{ID: "acc1"}, operationItem{InstrumentUID: "u"}, cache)
+	if first.Ticker != "" {
+		t.Fatalf("first operation ticker = %q, want the failed lookup to leave it empty", first.Ticker)
+	}
+	second := c.buildOperation(ctx, apiAccount{ID: "acc1"}, operationItem{InstrumentUID: "u"}, cache)
+	if second.Ticker != "SBER" {
+		t.Errorf("second operation ticker = %q, want the retry to resolve the instrument", second.Ticker)
 	}
 }

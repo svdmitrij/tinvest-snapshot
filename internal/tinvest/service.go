@@ -304,8 +304,7 @@ func (c *Client) Portfolio(ctx context.Context, accountID string) (*portfolioRes
 // identifier, misses included: an instrument the catalog does not index must
 // not be re-fetched for every operation that references it. Concurrent callers
 // for the same identifier share a single request. fetched reports whether this
-// call performed the request, so a permanent miss is counted once per
-// instrument instead of once per operation.
+// call performed the request.
 func (c *Client) instrumentByID(ctx context.Context, idType, id string) (value *instrumentShort, err error, fetched bool) {
 	return c.instrCache.get(ctx, idType+":"+id, func(ctx context.Context) (*instrumentShort, error) {
 		req := instrumentRequest{IDType: idType, ID: id}
@@ -317,27 +316,40 @@ func (c *Client) instrumentByID(ctx context.Context, idType, id string) (value *
 	})
 }
 
+// instrumentKey names an instrument once, whatever identifier reached it, so the
+// unresolved counter cannot count the same paper twice.
+func instrumentKey(uid, figi string) string {
+	if uid != "" {
+		return uid
+	}
+	return "figi:" + figi
+}
+
 // InstrumentRef returns reference data (ticker/name/isin/currency) for an
 // instrument. The operations and portfolio services can report a UID that the
 // instruments catalog does not index — instruments excluded from the base
 // catalog — while the same FIGI still resolves, so a permanent miss on the UID
-// falls back to the FIGI.
+// falls back to the FIGI. An empty UID is never sent as an identifier.
 func (c *Client) InstrumentRef(ctx context.Context, uid, figi string) (*instrumentShort, error) {
-	v, err, fetched := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
-	if err == nil || !isPermanent(err) {
-		return v, err
+	if uid == "" && figi == "" {
+		return nil, fmt.Errorf("нет идентификатора инструмента для GetInstrumentBy")
 	}
-	if figi == "" {
-		if fetched {
-			c.unresolved.Add(1)
-		}
-		return v, err
+	key := instrumentKey(uid, figi)
+	if uid == "" {
+		v, err, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+		return trackResolution(c, key, v, err)
+	}
+	v, err, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	if err == nil {
+		c.markResolved(key)
+		return v, nil
+	}
+	if !isPermanent(err) || figi == "" {
+		c.markUnresolved(key)
+		return nil, err
 	}
 	f, ferr, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-	if ferr != nil && fetched {
-		c.unresolved.Add(1)
-	}
-	return f, ferr
+		return trackResolution(c, key, f, ferr)
 }
 
 func (c *Client) bondByID(ctx context.Context, idType, id string) (value *bond, err error, fetched bool) {
@@ -353,21 +365,25 @@ func (c *Client) bondByID(ctx context.Context, idType, id string) (value *bond, 
 
 // BondRef is BondBy with the same UID-then-FIGI resolution as InstrumentRef.
 func (c *Client) BondRef(ctx context.Context, uid, figi string) (*bond, error) {
-	v, err, fetched := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
-	if err == nil || !isPermanent(err) {
-		return v, err
+	if uid == "" && figi == "" {
+		return nil, fmt.Errorf("нет идентификатора инструмента для BondBy")
 	}
-	if figi == "" {
-		if fetched {
-			c.unresolved.Add(1)
-		}
-		return v, err
+	key := instrumentKey(uid, figi)
+	if uid == "" {
+		v, err, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+		return trackResolution(c, key, v, err)
+	}
+	v, err, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	if err == nil {
+		c.markResolved(key)
+		return v, nil
+	}
+	if !isPermanent(err) || figi == "" {
+		c.markUnresolved(key)
+		return nil, err
 	}
 	f, ferr, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-	if ferr != nil && fetched {
-		c.unresolved.Add(1)
-	}
-	return f, ferr
+		return trackResolution(c, key, f, ferr)
 }
 
 // instrumentScoped runs an InstrumentsService method that accepts either a UID

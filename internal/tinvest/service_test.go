@@ -548,3 +548,98 @@ func TestInstrumentRefFallsBackToFIGIAndCachesMisses(t *testing.T) {
 		t.Errorf("hits uid=%d figi=%d, want the miss memoized", uidHits, figiHits)
 	}
 }
+
+// TestInstrumentRefUsesFIGIWhenUIDIsEmpty: an empty UID must not be sent as an
+// identifier.
+func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
+	var idTypes []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		idTypes = append(idTypes, req.IDType)
+		mu.Unlock()
+		if req.ID == "" {
+			http.Error(w, `{"code":3,"message":"id is required"}`, http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"instrument":{"uid":"catalog-uid","ticker":"GLRX"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instr, err := c.InstrumentRef(context.Background(), "", "TCS00A10CRQ4")
+	if err != nil {
+		t.Fatalf("FIGI-only lookup: %v", err)
+	}
+	if instr.Ticker != "GLRX" {
+		t.Fatalf("result = %+v", instr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(idTypes) != 1 || idTypes[0] != "INSTRUMENT_ID_TYPE_FIGI" {
+		t.Errorf("requests = %v, want a single FIGI request", idTypes)
+	}
+}
+
+// TestUnresolvedCountsInstrumentsOnce: the same instrument resolved through two
+// services must be counted once, and a later successful lookup must undo the
+// earlier failure.
+func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
+	var transientHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch req.ID {
+		case "uid-1", "figi-1":
+			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+		case "uid-3", "figi-3":
+			if atomic.AddInt32(&transientHits, 1) == 1 {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"instrument":{"uid":"` + req.ID + `","ticker":"VTB"}}`))
+		default:
+			w.Write([]byte(`{"instrument":{"uid":"` + req.ID + `","ticker":"GLRX"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if _, err := c.BondRef(ctx, "uid-1", "figi-1"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Fatalf("unresolved = %d, want 1 instrument", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err == nil {
+		t.Fatal("expected the transient failure to be reported")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want the failed instrument counted", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-4", "figi-4"); err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the instrument that later resolved to drop out", got)
+	}
+}

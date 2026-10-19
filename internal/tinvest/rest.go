@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -27,44 +26,65 @@ const contractPrefix = "tinkoff.public.invest.api.contract.v1."
 const defaultLimiterInterval = 320 * time.Millisecond
 
 // documentedQuota is the per-service unary limit (requests per minute) from the
-// API rate-limit policy. It is only the initial budget: the x-ratelimit-*
-// headers override it as soon as a response arrives.
+// API rate-limit policy. It seeds the window budget; the x-ratelimit-* headers
+// override it as soon as a response arrives.
 var documentedQuota = map[string]int{
 	"InstrumentsService": 200,
 	"OperationsService":  200,
-	"MarketDataService":  200,
+	"MarketDataService":  600,
 	"UsersService":       100,
-	"SandboxService":     100,
+	"SandboxService":     200,
 }
 
 // Logf logs a diagnostic line. The token is never passed to it.
 type Logf func(format string, args ...any)
 
-// limiter paces requests to one service group. A slot is reserved per request;
-// once the API reports the window quota as exhausted, the next slot moves to
-// the reported reset time.
+// defaultQuotaWindow is the window the gateway reports when a header carries a
+// counter without an explicit ";w=" part.
+const defaultQuotaWindow = time.Minute
+
+// maxQuotaResetSeconds clamps x-ratelimit-reset: some deployments report an
+// absolute epoch or a value far larger than the window, which would push the
+// schedule years into the future.
+const maxQuotaResetSeconds = 600
+
+// limiter paces requests to one service group. A slot is reserved per request
+// and consumes the window budget; once the budget is spent, the next slot lands
+// on the window deadline the gateway reported instead of a fresh full window
+// counted from the moment of the reservation.
 type limiter struct {
 	mu        sync.Mutex
 	interval  time.Duration
 	next      time.Time
-	remaining int           // requests left in the window; unknown until observed
-	reset     time.Duration // time until the window counter resets
+	limit     int           // requests allowed per window
+	remaining int           // requests still allowed in the current window
+	window    time.Duration // window length the gateway reports
+	resetAt   time.Time     // when the current window ends
 }
 
 func (l *limiter) reserve(ctx context.Context) error {
 	l.mu.Lock()
 	now := time.Now()
-	start := l.next
-	if start.Before(now) {
-		start = now
+	if l.window > 0 && !l.resetAt.IsZero() && !now.Before(l.resetAt) {
+		// The window rolled over: the budget is whole again.
+		l.remaining = l.limit
+		l.resetAt = now.Add(l.window)
 	}
-	if l.remaining <= 0 && l.reset > 0 {
-		if until := now.Add(l.reset); until.After(start) {
-			start = until
-		}
+	start := now
+	if l.next.After(start) {
+		start = l.next
+	}
+	if l.remaining <= 0 && !l.resetAt.IsZero() && l.resetAt.After(start) {
+		start = l.resetAt
+		l.remaining = l.limit
+		l.resetAt = start.Add(l.window)
+	}
+	if l.remaining > 0 {
+		l.remaining--
 	}
 	l.next = start.Add(l.interval)
 	l.mu.Unlock()
+
 	if wait := time.Until(start); wait > 0 {
 		select {
 		case <-ctx.Done():
@@ -77,66 +97,87 @@ func (l *limiter) reserve(ctx context.Context) error {
 
 // observe folds the gateway's quota headers into the schedule.
 func (l *limiter) observe(headers http.Header) {
+	limit, window, remaining, reset, ok := parseQuotaHeaders(headers)
+	if !ok {
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if limit, window, ok := parseQuotaValue(headers.Get("x-ratelimit-limit")); ok {
-		l.remaining = limit
-		if window > 0 {
-			l.reset = window
-		}
+	if limit > 0 {
+		l.limit = limit
 	}
-	if remaining, window, ok := parseQuotaValue(headers.Get("x-ratelimit-remaining")); ok {
+	if window > 0 {
+		l.window = window
+	} else if l.window == 0 {
+		l.window = defaultQuotaWindow
+	}
+	if remaining >= 0 {
 		l.remaining = remaining
-		if window > 0 {
-			l.reset = window
-		}
 	}
-	if seconds, window, ok := parseQuotaValue(headers.Get("x-ratelimit-reset")); ok {
-		if seconds > 0 {
-			l.reset = time.Duration(seconds) * time.Second
-		} else if window > 0 {
-			l.reset = window
-		}
-	}
-	if l.remaining <= 0 && l.reset > 0 {
-		if until := time.Now().Add(l.reset); until.After(l.next) {
-			l.next = until
-		}
+	if reset > 0 {
+		l.resetAt = time.Now().Add(reset)
+	} else if l.window > 0 {
+		l.resetAt = time.Now().Add(l.window)
 	}
 }
 
-// parseQuotaValue reads the first integer of a rate-limit header, which the
-// gateway may emit as a comma-separated list of counters ("200, 200;w=60"),
-// together with the window each counter belongs to. The tightest counter wins.
+// parseQuotaHeaders reads the x-ratelimit-* triple the gateway returns on every
+// response.
+func parseQuotaHeaders(headers http.Header) (limit int, window time.Duration, remaining int, reset time.Duration, ok bool) {
+	if value, w, found := parseQuotaValue(headers.Get("x-ratelimit-limit")); found {
+		limit, window, ok = value, w, true
+	}
+	if value, _, found := parseQuotaValue(headers.Get("x-ratelimit-remaining")); found {
+		remaining, ok = value, true
+	}
+	if raw := headers.Get("x-ratelimit-reset"); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err != nil || seconds <= 0 {
+			return
+		}
+		if seconds > maxQuotaResetSeconds {
+			seconds = maxQuotaResetSeconds
+		}
+		reset, ok = time.Duration(seconds)*time.Second, true
+	}
+	return
+}
+
+// parseQuotaValue reads a rate-limit header that may hold several counters for
+// different windows ("100;w=1, 5000;w=60"). It returns the tightest counter
+// together with the window that counter belongs to.
 func parseQuotaValue(value string) (int, time.Duration, bool) {
 	if value == "" {
 		return 0, 0, false
 	}
-	value = strings.TrimPrefix(value, "w=")
-	number, window := -1, time.Duration(0)
+	best, bestWindow := -1, time.Duration(0)
 	for _, part := range strings.Split(value, ",") {
 		token := strings.TrimSpace(part)
 		if token == "" {
 			continue
 		}
+		countPart, windowPart := token, ""
 		if i := strings.Index(token, ";"); i >= 0 {
-			if w, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(token[i+1:]), "w=")); err == nil && w > 0 {
-				window = time.Duration(w) * time.Second
-			}
-			token = strings.TrimSpace(token[:i])
+			countPart, windowPart = strings.TrimSpace(token[:i]), strings.TrimSpace(token[i+1:])
 		}
-		v, err := strconv.Atoi(token)
+		count, err := strconv.Atoi(countPart)
 		if err != nil {
 			continue
 		}
-		if number < 0 || v < number {
-			number = v
+		window := time.Duration(0)
+		if strings.HasPrefix(windowPart, "w=") {
+			if seconds, err := strconv.Atoi(windowPart[2:]); err == nil && seconds > 0 {
+				window = time.Duration(seconds) * time.Second
+			}
+		}
+		if best < 0 || count < best || (count == best && bestWindow == 0 && window > 0) {
+			best, bestWindow = count, window
 		}
 	}
-	if number < 0 {
+	if best < 0 {
 		return 0, 0, false
 	}
-	return number, window, true
+	return best, bestWindow, true
 }
 
 // Client is a minimal T-Invest REST gateway client using only the standard
@@ -162,9 +203,10 @@ type Client struct {
 	instrCache *lookupCache[instrumentShort]
 	bondCache  *lookupCache[bond]
 
-	// unresolved counts instruments the API could not resolve at all; each
-	// instrument is counted once, when its first lookup fails permanently.
-	unresolved atomic.Int32
+	// unresolved counts instruments whose reference data could not be obtained;
+	// each instrument is counted once, when its lookup fails for good.
+	unresolvedMu sync.Mutex
+	unresolved   map[string]bool
 }
 
 func (c *Client) limiterFor(service string) *limiter {
@@ -177,13 +219,45 @@ func (c *Client) limiterFor(service string) *limiter {
 	if budget <= 0 {
 		budget = 200
 	}
-	l := &limiter{interval: c.limiterInterval, remaining: budget, reset: time.Minute}
+	l := &limiter{interval: c.limiterInterval, limit: budget, remaining: budget, window: defaultQuotaWindow}
 	c.limiters[service] = l
 	return l
 }
 
-// Unresolved reports how many instruments the API never resolved.
-func (c *Client) Unresolved() int { return int(c.unresolved.Load()) }
+// Unresolved reports how many instruments the API could not resolve.
+func (c *Client) Unresolved() int {
+	c.unresolvedMu.Lock()
+	defer c.unresolvedMu.Unlock()
+	return len(c.unresolved)
+}
+
+// markUnresolved records one instrument whose reference data is missing.
+func (c *Client) markUnresolved(key string) {
+	c.unresolvedMu.Lock()
+	defer c.unresolvedMu.Unlock()
+	if c.unresolved == nil {
+		c.unresolved = map[string]bool{}
+	}
+	c.unresolved[key] = true
+}
+
+// markResolved drops an instrument from the unresolved set when a later lookup
+// succeeds, so the counter reports instruments that stayed unresolved.
+func (c *Client) markResolved(key string) {
+	c.unresolvedMu.Lock()
+	defer c.unresolvedMu.Unlock()
+	delete(c.unresolved, key)
+}
+
+// trackResolution records the outcome of one instrument resolution.
+func trackResolution[T any](c *Client, key string, value *T, err error) (*T, error) {
+	if err != nil {
+		c.markUnresolved(key)
+		return nil, err
+	}
+	c.markResolved(key)
+	return value, nil
+}
 
 // cacheEntry is one memoized lookup: a value, or the error that produced it.
 type cacheEntry[T any] struct {
@@ -198,11 +272,11 @@ type cacheEntry[T any] struct {
 type lookupCache[T any] struct {
 	mu       sync.Mutex
 	entries  map[string]cacheEntry[T]
-	inFlight map[string]chan struct{}
+	inFlight map[string]chan cacheEntry[T]
 }
 
 func newLookupCache[T any]() *lookupCache[T] {
-	return &lookupCache[T]{entries: map[string]cacheEntry[T]{}, inFlight: map[string]chan struct{}{}}
+	return &lookupCache[T]{entries: map[string]cacheEntry[T]{}, inFlight: map[string]chan cacheEntry[T]{}}
 }
 
 func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context.Context) (*T, error)) (value *T, err error, fetched bool) {
@@ -213,28 +287,29 @@ func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context
 	}
 	if ch, ok := l.inFlight[key]; ok {
 		l.mu.Unlock()
+		// The leader's result is handed over directly: a transient failure is
+		// not memoized, so re-reading the map would show an empty entry that
+		// the caller would read as a successful lookup.
 		select {
-		case <-ch:
+		case e := <-ch:
+			return e.value, e.err, false
 		case <-ctx.Done():
 			return nil, ctx.Err(), false
 		}
-		l.mu.Lock()
-		e := l.entries[key]
-		l.mu.Unlock()
-		return e.value, e.err, false
 	}
-	ch := make(chan struct{})
+	ch := make(chan cacheEntry[T], 1)
 	l.inFlight[key] = ch
 	l.mu.Unlock()
 
 	v, err := fetch(ctx)
+	e := cacheEntry[T]{value: v, err: err}
 	l.mu.Lock()
 	if err == nil || isPermanent(err) {
-		l.entries[key] = cacheEntry[T]{value: v, err: err}
+		l.entries[key] = e
 	}
 	delete(l.inFlight, key)
-	close(ch)
 	l.mu.Unlock()
+	ch <- e
 	return v, err, true
 }
 
@@ -289,9 +364,17 @@ func (e *APIError) Error() string {
 }
 
 // Permanent reports an error that no retry can fix: the request is wrong or the
-// resource does not exist. Only 429 among the 4xx family is worth retrying.
+// resource does not exist. 429 stays retryable, and so do the transient 4xx
+// codes 408 (Request Timeout) and 425 (Too Early).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests
+	if e.Status < 400 || e.Status >= 500 {
+		return false
+	}
+	switch e.Status {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusTooEarly:
+		return false
+	}
+	return true
 }
 
 func isPermanent(err error) bool {
@@ -317,8 +400,8 @@ func (c *Client) call(ctx context.Context, service, method string, req, out any)
 			return nil
 		}
 		lastErr = err
-		api, ok := err.(*APIError)
-		if ok && api.Permanent() {
+		var api *APIError
+		if errors.As(err, &api) && api.Permanent() {
 			return err
 		}
 		if attempt == attempts {
@@ -326,7 +409,7 @@ func (c *Client) call(ctx context.Context, service, method string, req, out any)
 		}
 		c.log("Ошибка при вызове %s/%s (попытка %d из %d): %v", service, method, attempt, attempts, err)
 		wait := c.delay * time.Duration(1<<(attempt-1))
-		if ok && api.RetryAfter > wait {
+		if api != nil && api.RetryAfter > wait {
 			wait = api.RetryAfter
 		}
 		wait += time.Duration(time.Now().UnixNano() % int64(max(c.delay/4, time.Millisecond)))

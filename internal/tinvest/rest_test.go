@@ -114,3 +114,46 @@ func writeTestCAPEM(t *testing.T) string {
 	}
 	return path
 }
+
+// TestLookupCacheWaiterSeesLeaderFailure: a transient leader failure is not
+// memoized, so the waiter must still receive the leader's result instead of an
+// empty entry that reads as success.
+func TestLookupCacheWaiterSeesLeaderFailure(t *testing.T) {
+	var hits int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			close(started)
+			<-release
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"instrument":{"ticker":"GLRX"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := c.InstrumentRef(ctx, "uid", "")
+		leaderErr <- err
+	}()
+	<-started
+	_, waiterErr := c.InstrumentRef(ctx, "uid", "")
+	close(release)
+	if err := <-leaderErr; err == nil {
+		t.Fatal("leader should report the transient failure")
+	}
+	if waiterErr == nil {
+		t.Fatal("waiter must see the leader's failure, not a nil result")
+	}
+	if hits := atomic.LoadInt32(&hits); hits != 1 {
+		t.Errorf("requests = %d, want a single coalesced request", hits)
+	}
+}
