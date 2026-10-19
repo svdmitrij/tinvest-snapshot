@@ -303,9 +303,8 @@ func (c *Client) Portfolio(ctx context.Context, accountID string) (*portfolioRes
 // instrumentByID returns reference data for one identifier, memoized per
 // identifier, misses included: an instrument the catalog does not index must
 // not be re-fetched for every operation that references it. Concurrent callers
-// for the same identifier share a single request. fetched reports whether this
-// call performed the request.
-func (c *Client) instrumentByID(ctx context.Context, idType, id string) (value *instrumentShort, err error, fetched bool) {
+// for the same identifier share a single request.
+func (c *Client) instrumentByID(ctx context.Context, idType, id string) (*instrumentShort, error) {
 	return c.instrCache.get(ctx, idType+":"+id, func(ctx context.Context) (*instrumentShort, error) {
 		req := instrumentRequest{IDType: idType, ID: id}
 		var resp getInstrumentResponse
@@ -316,13 +315,25 @@ func (c *Client) instrumentByID(ctx context.Context, idType, id string) (value *
 	})
 }
 
-// instrumentKey names an instrument once, whatever identifier reached it, so the
-// unresolved counter cannot count the same paper twice.
+// instrumentKey names an instrument once. FIGI is the canonical identifier: the
+// same paper reaches the counter whether a call carries a UID, a FIGI or both.
 func instrumentKey(uid, figi string) string {
-	if uid != "" {
-		return uid
+	if figi != "" {
+		return "figi:" + figi
 	}
-	return "figi:" + figi
+	return uid
+}
+
+// trackResolution records the outcome of one reference-data resolution. The
+// counter only holds instruments whose reference data stayed missing, so a later
+// successful lookup removes the instrument again.
+func (c *Client) trackResolution(key string, value *instrumentShort, err error) (*instrumentShort, error) {
+	if err != nil {
+		c.markUnresolved(key)
+		return nil, err
+	}
+	c.markResolved(key)
+	return value, nil
 }
 
 // InstrumentRef returns reference data (ticker/name/isin/currency) for an
@@ -336,10 +347,10 @@ func (c *Client) InstrumentRef(ctx context.Context, uid, figi string) (*instrume
 	}
 	key := instrumentKey(uid, figi)
 	if uid == "" {
-		v, err, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-		return trackResolution(c, key, v, err)
+		v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+		return c.trackResolution(key, v, err)
 	}
-	v, err, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
 	if err == nil {
 		c.markResolved(key)
 		return v, nil
@@ -348,11 +359,11 @@ func (c *Client) InstrumentRef(ctx context.Context, uid, figi string) (*instrume
 		c.markUnresolved(key)
 		return nil, err
 	}
-	f, ferr, _ := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-		return trackResolution(c, key, f, ferr)
+	f, ferr := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+	return c.trackResolution(key, f, ferr)
 }
 
-func (c *Client) bondByID(ctx context.Context, idType, id string) (value *bond, err error, fetched bool) {
+func (c *Client) bondByID(ctx context.Context, idType, id string) (*bond, error) {
 	return c.bondCache.get(ctx, idType+":"+id, func(ctx context.Context) (*bond, error) {
 		req := instrumentRequest{IDType: idType, ID: id}
 		var resp bondResponse
@@ -363,27 +374,22 @@ func (c *Client) bondByID(ctx context.Context, idType, id string) (value *bond, 
 	})
 }
 
-// BondRef is BondBy with the same UID-then-FIGI resolution as InstrumentRef.
+// BondRef is BondBy with the same UID-then-FIGI resolution as InstrumentRef. It
+// does not touch the unresolved counter: that counter measures reference data
+// (ticker/name/isin/currency), and a bond-specific failure leaves those fields
+// filled, while the CLI summary promises them empty.
 func (c *Client) BondRef(ctx context.Context, uid, figi string) (*bond, error) {
 	if uid == "" && figi == "" {
 		return nil, fmt.Errorf("нет идентификатора инструмента для BondBy")
 	}
-	key := instrumentKey(uid, figi)
 	if uid == "" {
-		v, err, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-		return trackResolution(c, key, v, err)
+		return c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
 	}
-	v, err, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
-	if err == nil {
-		c.markResolved(key)
-		return v, nil
+	v, err := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	if err == nil || !isPermanent(err) || figi == "" {
+		return v, err
 	}
-	if !isPermanent(err) || figi == "" {
-		c.markUnresolved(key)
-		return nil, err
-	}
-	f, ferr, _ := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-		return trackResolution(c, key, f, ferr)
+	return c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
 }
 
 // instrumentScoped runs an InstrumentsService method that accepts either a UID

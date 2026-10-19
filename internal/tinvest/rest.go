@@ -95,15 +95,18 @@ func (l *limiter) reserve(ctx context.Context) error {
 	return nil
 }
 
-// observe folds the gateway's quota headers into the schedule.
+// observe folds the gateway's quota headers into the schedule. A header the
+// response does not carry must not be read as a zero counter: an absent
+// x-ratelimit-remaining would otherwise declare the budget spent and stall the
+// limiter for a whole window.
 func (l *limiter) observe(headers http.Header) {
-	limit, window, remaining, reset, ok := parseQuotaHeaders(headers)
-	if !ok {
+	limit, window, remaining, reset, limitFound, remainingFound, resetFound := parseQuotaHeaders(headers)
+	if !limitFound && !remainingFound && !resetFound {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if limit > 0 {
+	if limitFound && limit > 0 {
 		l.limit = limit
 	}
 	if window > 0 {
@@ -111,10 +114,10 @@ func (l *limiter) observe(headers http.Header) {
 	} else if l.window == 0 {
 		l.window = defaultQuotaWindow
 	}
-	if remaining >= 0 {
+	if remainingFound {
 		l.remaining = remaining
 	}
-	if reset > 0 {
+	if resetFound {
 		l.resetAt = time.Now().Add(reset)
 	} else if l.window > 0 {
 		l.resetAt = time.Now().Add(l.window)
@@ -122,23 +125,22 @@ func (l *limiter) observe(headers http.Header) {
 }
 
 // parseQuotaHeaders reads the x-ratelimit-* triple the gateway returns on every
-// response.
-func parseQuotaHeaders(headers http.Header) (limit int, window time.Duration, remaining int, reset time.Duration, ok bool) {
+// response. Each counter is reported separately so the caller can tell an absent
+// header from a zero value.
+func parseQuotaHeaders(headers http.Header) (limit int, window time.Duration, remaining int, reset time.Duration, limitFound, remainingFound, resetFound bool) {
 	if value, w, found := parseQuotaValue(headers.Get("x-ratelimit-limit")); found {
-		limit, window, ok = value, w, true
+		limit, window, limitFound = value, w, true
 	}
 	if value, _, found := parseQuotaValue(headers.Get("x-ratelimit-remaining")); found {
-		remaining, ok = value, true
+		remaining, remainingFound = value, true
 	}
 	if raw := headers.Get("x-ratelimit-reset"); raw != "" {
-		seconds, err := strconv.Atoi(raw)
-		if err != nil || seconds <= 0 {
-			return
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			if seconds > maxQuotaResetSeconds {
+				seconds = maxQuotaResetSeconds
+			}
+			reset, resetFound = time.Duration(seconds)*time.Second, true
 		}
-		if seconds > maxQuotaResetSeconds {
-			seconds = maxQuotaResetSeconds
-		}
-		reset, ok = time.Duration(seconds)*time.Second, true
 	}
 	return
 }
@@ -249,16 +251,6 @@ func (c *Client) markResolved(key string) {
 	delete(c.unresolved, key)
 }
 
-// trackResolution records the outcome of one instrument resolution.
-func trackResolution[T any](c *Client, key string, value *T, err error) (*T, error) {
-	if err != nil {
-		c.markUnresolved(key)
-		return nil, err
-	}
-	c.markResolved(key)
-	return value, nil
-}
-
 // cacheEntry is one memoized lookup: a value, or the error that produced it.
 type cacheEntry[T any] struct {
 	value *T
@@ -279,11 +271,11 @@ func newLookupCache[T any]() *lookupCache[T] {
 	return &lookupCache[T]{entries: map[string]cacheEntry[T]{}, inFlight: map[string]chan cacheEntry[T]{}}
 }
 
-func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context.Context) (*T, error)) (value *T, err error, fetched bool) {
+func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context.Context) (*T, error)) (*T, error) {
 	l.mu.Lock()
 	if e, ok := l.entries[key]; ok {
 		l.mu.Unlock()
-		return e.value, e.err, false
+		return e.value, e.err
 	}
 	if ch, ok := l.inFlight[key]; ok {
 		l.mu.Unlock()
@@ -292,9 +284,9 @@ func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context
 		// the caller would read as a successful lookup.
 		select {
 		case e := <-ch:
-			return e.value, e.err, false
+			return e.value, e.err
 		case <-ctx.Done():
-			return nil, ctx.Err(), false
+			return nil, ctx.Err()
 		}
 	}
 	ch := make(chan cacheEntry[T], 1)
@@ -310,7 +302,7 @@ func (l *lookupCache[T]) get(ctx context.Context, key string, fetch func(context
 	delete(l.inFlight, key)
 	l.mu.Unlock()
 	ch <- e
-	return v, err, true
+	return v, err
 }
 
 // New builds a client. delay is the base linear backoff between attempts.

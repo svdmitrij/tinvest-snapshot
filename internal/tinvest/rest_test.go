@@ -121,11 +121,12 @@ func writeTestCAPEM(t *testing.T) string {
 func TestLookupCacheWaiterSeesLeaderFailure(t *testing.T) {
 	var hits int32
 	started := make(chan struct{})
-	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&hits, 1) == 1 {
 			close(started)
-			<-release
+			// The leader stays in flight long enough for the waiter to register
+			// on the same key.
+			time.Sleep(200 * time.Millisecond)
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
@@ -141,16 +142,20 @@ func TestLookupCacheWaiterSeesLeaderFailure(t *testing.T) {
 
 	leaderErr := make(chan error, 1)
 	go func() {
-		_, err := c.InstrumentRef(ctx, "uid", "")
+		_, err := c.InstrumentRef(ctx, "uid", "figi")
 		leaderErr <- err
 	}()
 	<-started
-	_, waiterErr := c.InstrumentRef(ctx, "uid", "")
-	close(release)
-	if err := <-leaderErr; err == nil {
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := c.InstrumentRef(ctx, "uid", "figi")
+		waiterErr <- err
+	}()
+	le, we := <-leaderErr, <-waiterErr
+	if le == nil {
 		t.Fatal("leader should report the transient failure")
 	}
-	if waiterErr == nil {
+	if we == nil {
 		t.Fatal("waiter must see the leader's failure, not a nil result")
 	}
 	if hits := atomic.LoadInt32(&hits); hits != 1 {

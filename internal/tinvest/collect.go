@@ -149,20 +149,19 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 		State:           operationStateName(it.State),
 	}
 	if it.InstrumentUID != "" || it.Figi != "" {
-		key := it.InstrumentUID
-		if key == "" {
-			key = "figi:" + it.Figi
-		}
+		key := instrumentKey(it.InstrumentUID, it.Figi)
 		instr, ok := cache[key]
 		if !ok {
 			got, err := c.InstrumentRef(ctx, it.InstrumentUID, it.Figi)
 			if err != nil {
 				c.log("Не удалось получить справочные данные по инструменту %s: %v", key, err)
+				if isPermanent(err) {
+					// The miss is memoized for the run, so one instrument is
+					// reported once and not once per operation; transient
+					// failures stay retryable for the next operation.
+					cache[key] = nil
+				}
 			} else {
-				// Only successes are cached here: the client cache already
-				// memoizes permanent misses, and a transient failure must stay
-				// retryable for the next operation that references the same
-				// instrument.
 				cache[key] = got
 				instr = got
 			}

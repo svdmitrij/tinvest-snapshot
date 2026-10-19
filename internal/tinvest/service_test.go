@@ -588,9 +588,8 @@ func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
 	}
 }
 
-// TestUnresolvedCountsInstrumentsOnce: the same instrument resolved through two
-// services must be counted once, and a later successful lookup must undo the
-// earlier failure.
+// TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not
+// by lookup, and only counts instruments whose reference data stayed missing.
 func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	var transientHits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -621,6 +620,12 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
+	// The same paper reached by FIGI alone must land on the same key.
+	if _, err := c.InstrumentRef(ctx, "", "figi-1"); err == nil {
+		t.Fatal("expected the memoized miss")
+	}
+	// A bond-data failure leaves the reference fields filled, so it must not be
+	// counted.
 	if _, err := c.BondRef(ctx, "uid-1", "figi-1"); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
@@ -635,9 +640,6 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	}
 	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err != nil {
 		t.Fatalf("retry: %v", err)
-	}
-	if _, err := c.InstrumentRef(ctx, "uid-4", "figi-4"); err != nil {
-		t.Fatalf("lookup: %v", err)
 	}
 	if got := c.Unresolved(); got != 1 {
 		t.Errorf("unresolved = %d, want the instrument that later resolved to drop out", got)

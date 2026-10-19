@@ -198,9 +198,9 @@ func TestLimiterDoesNotStretchTheWindowPerReservation(t *testing.T) {
 func TestParseQuotaHeadersBindsCounterToItsOwnWindow(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-ratelimit-limit", "100;w=1, 5000;w=60")
-	limit, window, _, _, ok := parseQuotaHeaders(headers)
-	if !ok || limit != 100 || window != time.Second {
-		t.Errorf("limit=%d window=%v ok=%v, want 100 with its own 1s window", limit, window, ok)
+	limit, window, _, _, limitFound, _, _ := parseQuotaHeaders(headers)
+	if !limitFound || limit != 100 || window != time.Second {
+		t.Errorf("limit=%d window=%v found=%v, want 100 with its own 1s window", limit, window, limitFound)
 	}
 }
 
@@ -209,9 +209,29 @@ func TestParseQuotaHeadersBindsCounterToItsOwnWindow(t *testing.T) {
 func TestQuotaResetIsClamped(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-ratelimit-reset", "1767000000")
-	_, _, _, reset, ok := parseQuotaHeaders(headers)
-	if !ok || reset != maxQuotaResetSeconds*time.Second {
-		t.Errorf("reset=%v ok=%v, want the %ds clamp", reset, ok, maxQuotaResetSeconds)
+	_, _, _, reset, _, _, resetFound := parseQuotaHeaders(headers)
+	if !resetFound || reset != maxQuotaResetSeconds*time.Second {
+		t.Errorf("reset=%v found=%v, want the %ds clamp", reset, resetFound, maxQuotaResetSeconds)
+	}
+}
+
+// TestAbsentRemainingDoesNotExhaustTheBudget: a response that carries limit and
+// reset but no x-ratelimit-remaining must not be read as a zero counter.
+func TestAbsentRemainingDoesNotExhaustTheBudget(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-ratelimit-limit", "200;w=60")
+	headers.Set("x-ratelimit-reset", "1")
+	l := &limiter{interval: time.Millisecond, limit: 200, remaining: 200, window: time.Minute}
+	l.observe(headers)
+	start := time.Now()
+	if err := l.reserve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("reserve waited %v: an absent x-ratelimit-remaining must not declare the budget spent", elapsed)
+	}
+	if l.remaining != 199 {
+		t.Errorf("remaining = %d, want the budget untouched by the absent header", l.remaining)
 	}
 }
 
