@@ -591,21 +591,14 @@ func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
 // TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not
 // by lookup, and only counts instruments whose reference data stayed missing.
 func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
-	var transientHits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req instrumentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatal(err)
 		}
 		switch req.ID {
-		case "uid-1", "figi-1":
+		case "uid-1", "uid-2", "figi-2":
 			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
-		case "uid-3", "figi-3":
-			if atomic.AddInt32(&transientHits, 1) == 1 {
-				http.Error(w, "boom", http.StatusInternalServerError)
-				return
-			}
-			w.Write([]byte(`{"instrument":{"uid":"` + req.ID + `","ticker":"VTB"}}`))
 		default:
 			w.Write([]byte(`{"instrument":{"uid":"` + req.ID + `","ticker":"GLRX"}}`))
 		}
@@ -617,31 +610,40 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err == nil {
+
+	// A paper missing on both identifiers stays one entry, whatever identifier
+	// reaches it.
+	if _, err := c.InstrumentRef(ctx, "uid-2", "figi-2"); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
-	// The same paper reached by FIGI alone must land on the same key.
-	if _, err := c.InstrumentRef(ctx, "", "figi-1"); err == nil {
+	if _, err := c.InstrumentRef(ctx, "", "figi-2"); err == nil {
 		t.Fatal("expected the memoized miss")
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-2", ""); err == nil {
+		t.Fatal("expected the memoized miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Fatalf("unresolved = %d, want one instrument for three lookups", got)
+	}
+	// A UID-only miss must drop out when the same paper resolves through its FIGI.
+	if _, err := c.InstrumentRef(ctx, "uid-1", ""); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want the UID-only miss counted", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err != nil {
+		t.Fatalf("FIGI lookup: %v", err)
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the UID-only record cleared by the FIGI resolution", got)
 	}
 	// A bond-data failure leaves the reference fields filled, so it must not be
 	// counted.
-	if _, err := c.BondRef(ctx, "uid-1", "figi-1"); err == nil {
+	if _, err := c.BondRef(ctx, "uid-2", "figi-2"); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
 	if got := c.Unresolved(); got != 1 {
-		t.Fatalf("unresolved = %d, want 1 instrument", got)
-	}
-	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err == nil {
-		t.Fatal("expected the transient failure to be reported")
-	}
-	if got := c.Unresolved(); got != 2 {
-		t.Fatalf("unresolved = %d, want the failed instrument counted", got)
-	}
-	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-	if got := c.Unresolved(); got != 1 {
-		t.Errorf("unresolved = %d, want the instrument that later resolved to drop out", got)
+		t.Errorf("unresolved = %d, want the bond failure not counted", got)
 	}
 }

@@ -149,7 +149,7 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 		State:           operationStateName(it.State),
 	}
 	if it.InstrumentUID != "" || it.Figi != "" {
-		key := instrumentKey(it.InstrumentUID, it.Figi)
+		key := canonicalKey(it.InstrumentUID, it.Figi)
 		instr, ok := cache[key]
 		if !ok {
 			got, err := c.InstrumentRef(ctx, it.InstrumentUID, it.Figi)

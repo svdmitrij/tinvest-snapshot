@@ -206,9 +206,12 @@ type Client struct {
 	bondCache  *lookupCache[bond]
 
 	// unresolved counts instruments whose reference data could not be obtained;
-	// each instrument is counted once, when its lookup fails for good.
+	// each instrument is counted once, when its lookup fails for good. aliases
+	// remembers which counter key a paper was recorded under, so a call that
+	// carries only one identifier still reaches the record made through the other.
 	unresolvedMu sync.Mutex
 	unresolved   map[string]bool
+	aliases      map[string]string
 }
 
 func (c *Client) limiterFor(service string) *limiter {
@@ -233,22 +236,48 @@ func (c *Client) Unresolved() int {
 	return len(c.unresolved)
 }
 
-// markUnresolved records one instrument whose reference data is missing.
-func (c *Client) markUnresolved(key string) {
+// markUnresolved records an instrument under the identifier the call carried. If
+// the same paper was already recorded under the other identifier, the existing
+// key is reused, so a paper known by both a UID and a FIGI is counted once.
+func (c *Client) markUnresolved(uid, figi string) {
 	c.unresolvedMu.Lock()
 	defer c.unresolvedMu.Unlock()
 	if c.unresolved == nil {
 		c.unresolved = map[string]bool{}
 	}
+	key := canonicalKey(uid, figi)
+	if uid != "" {
+		if a, ok := c.aliases[uid]; ok {
+			key = a
+		}
+	}
+	if figi != "" {
+		if a, ok := c.aliases[figi]; ok {
+			key = a
+		}
+	}
 	c.unresolved[key] = true
+	if uid != "" && figi != "" {
+		if c.aliases == nil {
+			c.aliases = map[string]string{}
+		}
+		c.aliases[uid] = key
+		c.aliases[figi] = key
+	}
 }
 
-// markResolved drops an instrument from the unresolved set when a later lookup
-// succeeds, so the counter reports instruments that stayed unresolved.
-func (c *Client) markResolved(key string) {
+// markResolved removes an instrument under both identifiers it is known by: a
+// resolution reached through one identifier clears the record made through the
+// other, so the counter reports instruments that stayed unresolved.
+func (c *Client) markResolved(uid, figi string) {
 	c.unresolvedMu.Lock()
 	defer c.unresolvedMu.Unlock()
-	delete(c.unresolved, key)
+	if uid != "" {
+		delete(c.unresolved, "uid:"+uid)
+	}
+	if figi != "" {
+		delete(c.unresolved, "figi:"+figi)
+	}
 }
 
 // cacheEntry is one memoized lookup: a value, or the error that produced it.

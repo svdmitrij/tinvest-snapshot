@@ -315,24 +315,25 @@ func (c *Client) instrumentByID(ctx context.Context, idType, id string) (*instru
 	})
 }
 
-// instrumentKey names an instrument once. FIGI is the canonical identifier: the
-// same paper reaches the counter whether a call carries a UID, a FIGI or both.
-func instrumentKey(uid, figi string) string {
+// canonicalKey names an instrument once. FIGI is the canonical identifier when
+// the call carries one; the UID is used when it does not. markUnresolved and
+// markResolved reconcile the two keys for the same paper.
+func canonicalKey(uid, figi string) string {
 	if figi != "" {
 		return "figi:" + figi
 	}
-	return uid
+	return "uid:" + uid
 }
 
 // trackResolution records the outcome of one reference-data resolution. The
 // counter only holds instruments whose reference data stayed missing, so a later
 // successful lookup removes the instrument again.
-func (c *Client) trackResolution(key string, value *instrumentShort, err error) (*instrumentShort, error) {
+func (c *Client) trackResolution(uid, figi string, value *instrumentShort, err error) (*instrumentShort, error) {
 	if err != nil {
-		c.markUnresolved(key)
+		c.markUnresolved(uid, figi)
 		return nil, err
 	}
-	c.markResolved(key)
+	c.markResolved(uid, figi)
 	return value, nil
 }
 
@@ -345,22 +346,21 @@ func (c *Client) InstrumentRef(ctx context.Context, uid, figi string) (*instrume
 	if uid == "" && figi == "" {
 		return nil, fmt.Errorf("нет идентификатора инструмента для GetInstrumentBy")
 	}
-	key := instrumentKey(uid, figi)
 	if uid == "" {
 		v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-		return c.trackResolution(key, v, err)
+		return c.trackResolution(uid, figi, v, err)
 	}
 	v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
 	if err == nil {
-		c.markResolved(key)
+		c.markResolved(uid, figi)
 		return v, nil
 	}
 	if !isPermanent(err) || figi == "" {
-		c.markUnresolved(key)
+		c.markUnresolved(uid, figi)
 		return nil, err
 	}
 	f, ferr := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
-	return c.trackResolution(key, f, ferr)
+	return c.trackResolution(uid, figi, f, ferr)
 }
 
 func (c *Client) bondByID(ctx context.Context, idType, id string) (*bond, error) {
