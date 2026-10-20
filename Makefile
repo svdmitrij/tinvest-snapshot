@@ -54,7 +54,7 @@ msi: ## Build the Windows MSI installer (skipped if toolchain absent)
 	bash scripts/package.sh "$(VERSION)" msi
 
 dist: ## Full release artifact set into dist/
-	bash scripts/package.sh all
+	bash scripts/package.sh "$(VERSION)"
 
 clean: ## Remove build output
 	rm -rf dist
