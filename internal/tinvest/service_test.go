@@ -588,26 +588,33 @@ func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
 	}
 }
 
-// TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not
-// by lookup, and only counts instruments whose reference data stayed missing.
+// TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not by
+// lookup, and only counts instruments whose reference data stayed missing.
 func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
-	// A FIGI lookup returns the catalog uid, which is what lets the counter
-	// reconcile a record made through the UID.
-	catalogUID := map[string]string{"figi-1": "uid-1", "figi-3": "uid-3"}
+	// The real fallback shape: the operation uid is not in the catalog, and the
+	// FIGI lookup returns a different catalog uid.
+	catalogUID := map[string]string{"figi-1": "catalog-uid-1", "figi-3": "catalog-uid-3"}
+	var transientHits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req instrumentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatal(err)
 		}
 		switch req.ID {
-		case "uid-1", "uid-2", "uid-3", "figi-2":
+		case "uid-1", "uid-2", "figi-2":
 			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+		case "uid-3":
+			if atomic.AddInt32(&transientHits, 1) == 1 {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"instrument":{"uid":"catalog-uid-3","figi":"figi-3","ticker":"VTB"}}`))
 		default:
 			uid := catalogUID[req.ID]
 			if uid == "" {
 				uid = req.ID
 			}
-			w.Write([]byte(`{"instrument":{"uid":"` + uid + `","ticker":"GLRX"}}`))
+			w.Write([]byte(`{"instrument":{"uid":"` + uid + `","figi":"` + req.ID + `","ticker":"GLRX"}}`))
 		}
 	}))
 	defer srv.Close()
@@ -618,8 +625,7 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// A paper missing on both identifiers stays one entry, whatever identifier
-	// reaches it.
+	// Missing on both identifiers: one entry, whatever identifier reaches it.
 	if _, err := c.InstrumentRef(ctx, "uid-2", "figi-2"); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
@@ -632,32 +638,33 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 	if got := c.Unresolved(); got != 1 {
 		t.Fatalf("unresolved = %d, want one instrument for three lookups", got)
 	}
-	// A UID-only miss must drop out when the same paper resolves through its FIGI.
+	// The operation uid misses and the FIGI resolves to a different catalog uid:
+	// the record made under the operation uid must be cleared.
 	if _, err := c.InstrumentRef(ctx, "uid-1", ""); err == nil {
 		t.Fatal("expected a permanent miss")
 	}
 	if got := c.Unresolved(); got != 2 {
-		t.Fatalf("unresolved = %d, want the UID-only miss counted", got)
+		t.Fatalf("unresolved = %d, want the operation-uid miss counted", got)
 	}
 	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err != nil {
 		t.Fatalf("FIGI lookup: %v", err)
 	}
 	if got := c.Unresolved(); got != 1 {
-		t.Errorf("unresolved = %d, want the UID-only record cleared by the FIGI resolution", got)
+		t.Errorf("unresolved = %d, want the operation-uid record cleared by the catalog uid", got)
 	}
-	// A record made by a UID-only call is cleared by a later lookup that carries
-	// only the FIGI: the response returns the catalog uid.
-	if _, err := c.InstrumentRef(ctx, "uid-3", ""); err == nil {
-		t.Fatal("expected a permanent miss")
+	// The reverse direction: a record made under the FIGI key must be cleared by a
+	// later UID-only success.
+	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err == nil {
+		t.Fatal("expected the transient failure to be reported")
 	}
 	if got := c.Unresolved(); got != 2 {
-		t.Fatalf("unresolved = %d, want the UID-only miss counted", got)
+		t.Fatalf("unresolved = %d, want the FIGI-keyed record", got)
 	}
-	if _, err := c.InstrumentRef(ctx, "", "figi-3"); err != nil {
-		t.Fatalf("FIGI-only lookup: %v", err)
+	if _, err := c.InstrumentRef(ctx, "uid-3", ""); err != nil {
+		t.Fatalf("UID-only retry: %v", err)
 	}
 	if got := c.Unresolved(); got != 1 {
-		t.Errorf("unresolved = %d, want the UID-only record cleared by the FIGI-only lookup", got)
+		t.Errorf("unresolved = %d, want the FIGI-keyed record cleared by the UID-only success", got)
 	}
 	// A bond-data failure leaves the reference fields filled, so it must not be
 	// counted.

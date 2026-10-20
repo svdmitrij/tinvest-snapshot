@@ -327,18 +327,18 @@ func canonicalKey(uid, figi string) string {
 
 // trackResolution records the outcome of one reference-data resolution. The
 // counter only holds instruments whose reference data stayed missing, so a later
-// successful lookup removes the instrument again.
+// successful lookup removes the instrument under every key it is known by.
 func (c *Client) trackResolution(uid, figi string, value *instrumentShort, err error) (*instrumentShort, error) {
 	if err != nil {
 		c.markUnresolved(uid, figi)
 		return nil, err
 	}
-	// A lookup by FIGI returns the catalog uid, so a record made by a UID-only
-	// call is cleared even when the later call carries only the FIGI.
-	if value != nil && value.UID != "" {
-		uid = value.UID
-	}
 	c.markResolved(uid, figi)
+	// A lookup by FIGI returns the catalog identifiers, which are not the
+	// operation uid that failed to resolve; the record may sit under either.
+	if value != nil && (value.UID != "" || value.Figi != "") {
+		c.markResolved(value.UID, value.Figi)
+	}
 	return value, nil
 }
 

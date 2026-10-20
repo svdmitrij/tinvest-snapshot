@@ -236,48 +236,70 @@ func (c *Client) Unresolved() int {
 	return len(c.unresolved)
 }
 
-// markUnresolved records an instrument under the identifier the call carried. If
-// the same paper was already recorded under the other identifier, the existing
-// key is reused, so a paper known by both a UID and a FIGI is counted once.
+// markUnresolved records an instrument under the key it is known by: if the same
+// paper was already recorded under the other identifier, that key is reused, so a
+// paper known by both a UID and a FIGI is counted once.
 func (c *Client) markUnresolved(uid, figi string) {
 	c.unresolvedMu.Lock()
 	defer c.unresolvedMu.Unlock()
 	if c.unresolved == nil {
 		c.unresolved = map[string]bool{}
 	}
-	key := canonicalKey(uid, figi)
-	if uid != "" {
-		if a, ok := c.aliases[uid]; ok {
-			key = a
-		}
+	keys := c.instrumentKeysLocked(uid, figi)
+	if len(keys) == 0 {
+		return
 	}
-	if figi != "" {
-		if a, ok := c.aliases[figi]; ok {
-			key = a
-		}
-	}
-	c.unresolved[key] = true
-	if uid != "" && figi != "" {
-		if c.aliases == nil {
-			c.aliases = map[string]string{}
-		}
-		c.aliases[uid] = key
-		c.aliases[figi] = key
-	}
+	c.unresolved[keys[0]] = true
 }
 
-// markResolved removes an instrument under both identifiers it is known by: a
-// resolution reached through one identifier clears the record made through the
-// other, so the counter reports instruments that stayed unresolved.
+// markResolved clears an instrument under every key it is known by, so a
+// resolution reached through one identifier removes the record made through the
+// other.
 func (c *Client) markResolved(uid, figi string) {
 	c.unresolvedMu.Lock()
 	defer c.unresolvedMu.Unlock()
-	if uid != "" {
-		delete(c.unresolved, "uid:"+uid)
+	for _, key := range c.instrumentKeysLocked(uid, figi) {
+		delete(c.unresolved, key)
 	}
-	if figi != "" {
-		delete(c.unresolved, "figi:"+figi)
+}
+
+// instrumentKeysLocked returns the counter keys an instrument can live under: the
+// key it is already recorded under through an alias, otherwise the canonical one,
+// plus the direct key of each identifier the call carries. Identifiers seen
+// together are aliased to the same key, so a later call with a single identifier
+// reaches the same record. The caller must hold unresolvedMu.
+func (c *Client) instrumentKeysLocked(uid, figi string) []string {
+	if c.aliases == nil {
+		c.aliases = map[string]string{}
 	}
+	key := ""
+	for _, id := range []string{uid, figi} {
+		if id != "" {
+			if a, ok := c.aliases[id]; ok {
+				key = a
+				break
+			}
+		}
+	}
+	if key == "" {
+		key = canonicalKey(uid, figi)
+	}
+	if key == "" {
+		return nil
+	}
+	for _, id := range []string{uid, figi} {
+		if id != "" {
+			c.aliases[id] = key
+		}
+	}
+	keys := []string{key}
+	if uid != "" && "uid:"+uid != key {
+		keys = append(keys, "uid:"+uid)
+	}
+	if figi != "" && "figi:"+figi != key {
+		keys = append(keys, "figi:"+figi)
+	}
+	return keys
 }
 
 // cacheEntry is one memoized lookup: a value, or the error that produced it.
