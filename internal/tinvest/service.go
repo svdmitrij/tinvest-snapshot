@@ -111,9 +111,10 @@ func formatLastPrice(item catalog.Instrument, price lastPrice) string {
 // with (completed, total) after each instrument finishes, success or failure.
 func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, now time.Time, onProgress ProgressFunc) ([]catalog.Instrument, error) {
 	out := append([]catalog.Instrument(nil), items...)
-	// The three enrichment endpoints share a restrictive API quota. A small
-	// bounded pool avoids a retry storm while completing a full catalog within
-	// the GUI's overall timeout under normal response latency.
+	// The enrichment endpoints share the InstrumentsService quota, which the
+	// client limiter now paces for every call to that service. A small bounded
+	// pool keeps the number of in-flight requests predictable while a full
+	// catalog completes within the GUI's overall timeout.
 	sem := make(chan struct{}, 3)
 	done := make(chan struct{}, len(out))
 	var failed atomic.Int32
@@ -127,7 +128,7 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 			if out[i].Type == "bond" {
 				// A bond may amortize over decades: ask for the whole life span,
 				// not the default nearest-period window.
-				if events, e := c.BondEvents(ctx, out[i].UID, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
+				if events, e := c.BondEvents(ctx, out[i].UID, out[i].FIGI, now.AddDate(-10, 0, 0), now.AddDate(30, 0, 0)); e == nil {
 					if n, ok := nextBondCoupon(events, now); ok {
 						out[i].NextCouponDate = eventDay(n)
 						if out[i].CouponFrequency > 0 {
@@ -146,12 +147,14 @@ func (c *Client) EnrichCatalog(ctx context.Context, items []catalog.Instrument, 
 					out[i].MaturityDate = effectiveMaturity(contractual, out[i].OfferDates, now)
 				} else {
 					failed.Add(1)
+					c.log("Не удалось получить события облигации %s: %v", out[i].UID, e)
 					return
 				}
 			} else if out[i].Type == "share" {
-				d, e := c.Dividends(ctx, out[i].UID, now.AddDate(-1, 0, 0), now)
+				d, e := c.Dividends(ctx, out[i].UID, out[i].FIGI, now.AddDate(-1, 0, 0), now)
 				if e != nil {
 					failed.Add(1)
+					c.log("Не удалось получить дивиденды %s: %v", out[i].UID, e)
 					return
 				}
 				out[i].HasDividends = len(d) > 0
@@ -297,114 +300,125 @@ func (c *Client) Portfolio(ctx context.Context, accountID string) (*portfolioRes
 	return &resp, nil
 }
 
-// InstrumentByUID returns reference data (ticker/name/isin/currency) for a uid.
-func (c *Client) InstrumentByUID(ctx context.Context, uid string) (*instrumentShort, error) {
-	req := instrumentRequest{IDType: "INSTRUMENT_ID_TYPE_UID", ID: uid}
-	var resp getInstrumentResponse
-	if err := c.call(ctx, "InstrumentsService", "GetInstrumentBy", req, &resp); err != nil {
+// instrumentByID returns reference data for one identifier, memoized per
+// identifier, misses included: an instrument the catalog does not index must
+// not be re-fetched for every operation that references it. Concurrent callers
+// for the same identifier share a single request.
+func (c *Client) instrumentByID(ctx context.Context, idType, id string) (*instrumentShort, error) {
+	return c.instrCache.get(ctx, idType+":"+id, func(ctx context.Context) (*instrumentShort, error) {
+		req := instrumentRequest{IDType: idType, ID: id}
+		var resp getInstrumentResponse
+		if err := c.call(ctx, "InstrumentsService", "GetInstrumentBy", req, &resp); err != nil {
+			return nil, err
+		}
+		return &resp.Instrument, nil
+	})
+}
+
+// canonicalKey names an instrument once. FIGI is the canonical identifier when
+// the call carries one; the UID is used when it does not. markUnresolved and
+// markResolved reconcile the two keys for the same paper.
+func canonicalKey(uid, figi string) string {
+	if figi != "" {
+		return "figi:" + figi
+	}
+	return "uid:" + uid
+}
+
+// trackResolution records the outcome of one reference-data resolution. The
+// counter only holds instruments whose reference data stayed missing, so a later
+// successful lookup removes the instrument under every key it is known by.
+func (c *Client) trackResolution(uid, figi string, value *instrumentShort, err error) (*instrumentShort, error) {
+	if err != nil {
+		c.markUnresolved(uid, figi)
 		return nil, err
 	}
-	return &resp.Instrument, nil
+	c.markResolved(uid, figi)
+	// A lookup by FIGI returns the catalog identifiers, which are not the
+	// operation uid that failed to resolve; the record may sit under either.
+	if value != nil && (value.UID != "" || value.Figi != "") {
+		c.markResolved(value.UID, value.Figi)
+	}
+	return value, nil
 }
 
-// InstrumentByUIDCached is like InstrumentByUID but uses an in-memory cache
-// with per-UID coalesce: concurrent requests for the same UID result in
-// a single API call; other goroutines wait and read the cached result.
-func (c *Client) InstrumentByUIDCached(ctx context.Context, uid string) (*instrumentShort, error) {
-	c.instrCacheMu.RLock()
-	if v, ok := c.instrShortCache[uid]; ok {
-		c.instrCacheMu.RUnlock()
+// InstrumentRef returns reference data (ticker/name/isin/currency) for an
+// instrument. The operations and portfolio services can report a UID that the
+// instruments catalog does not index — instruments excluded from the base
+// catalog — while the same FIGI still resolves, so a permanent miss on the UID
+// falls back to the FIGI. An empty UID is never sent as an identifier.
+func (c *Client) InstrumentRef(ctx context.Context, uid, figi string) (*instrumentShort, error) {
+	if uid == "" && figi == "" {
+		return nil, fmt.Errorf("нет идентификатора инструмента для GetInstrumentBy")
+	}
+	if uid == "" {
+		v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+		return c.trackResolution(uid, figi, v, err)
+	}
+	v, err := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	if err == nil {
+		c.markResolved(uid, figi)
 		return v, nil
 	}
-	c.instrCacheMu.RUnlock()
-
-	// Check if another goroutine is already fetching this UID.
-	c.inCoalesceMu.Lock()
-	if ch, ok := c.inCoalesce[uid]; ok {
-		c.inCoalesceMu.Unlock()
-		<-ch
-		c.instrCacheMu.RLock()
-		v := c.instrShortCache[uid]
-		c.instrCacheMu.RUnlock()
-		if v != nil {
-			return v, nil
-		}
-		// First goroutine failed; retry alone.
-		return c.InstrumentByUIDCached(ctx, uid)
-	}
-	ch := make(chan struct{})
-	c.inCoalesce[uid] = ch
-	c.inCoalesceMu.Unlock()
-
-	v, err := c.InstrumentByUID(ctx, uid)
-	if err == nil {
-		c.instrCacheMu.Lock()
-		c.instrShortCache[uid] = v
-		c.instrCacheMu.Unlock()
-	}
-	c.inCoalesceMu.Lock()
-	delete(c.inCoalesce, uid)
-	close(ch)
-	c.inCoalesceMu.Unlock()
-	return v, err
-}
-
-// BondByUID returns bond-specific reference data.
-func (c *Client) BondByUID(ctx context.Context, uid string) (*bond, error) {
-	req := instrumentRequest{IDType: "INSTRUMENT_ID_TYPE_UID", ID: uid}
-	var resp bondResponse
-	if err := c.call(ctx, "InstrumentsService", "BondBy", req, &resp); err != nil {
+	if !isPermanent(err) || figi == "" {
+		c.markUnresolved(uid, figi)
 		return nil, err
 	}
-	return &resp.Instrument, nil
+	f, ferr := c.instrumentByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+	return c.trackResolution(uid, figi, f, ferr)
 }
 
-// BondByUIDCached is like BondByUID but uses an in-memory cache
-// with per-UID coalesce: concurrent requests for the same UID result in
-// a single API call; other goroutines wait and read the cached result.
-func (c *Client) BondByUIDCached(ctx context.Context, uid string) (*bond, error) {
-	c.bondCacheMu.RLock()
-	if v, ok := c.bondShortCache[uid]; ok {
-		c.bondCacheMu.RUnlock()
-		return v, nil
-	}
-	c.bondCacheMu.RUnlock()
-
-	// Check if another goroutine is already fetching this UID.
-	c.bCoalesceMu.Lock()
-	if ch, ok := c.bCoalesce[uid]; ok {
-		c.bCoalesceMu.Unlock()
-		<-ch
-		c.bondCacheMu.RLock()
-		v := c.bondShortCache[uid]
-		c.bondCacheMu.RUnlock()
-		if v != nil {
-			return v, nil
+func (c *Client) bondByID(ctx context.Context, idType, id string) (*bond, error) {
+	return c.bondCache.get(ctx, idType+":"+id, func(ctx context.Context) (*bond, error) {
+		req := instrumentRequest{IDType: idType, ID: id}
+		var resp bondResponse
+		if err := c.call(ctx, "InstrumentsService", "BondBy", req, &resp); err != nil {
+			return nil, err
 		}
-		return c.BondByUIDCached(ctx, uid)
-	}
-	ch := make(chan struct{})
-	c.bCoalesce[uid] = ch
-	c.bCoalesceMu.Unlock()
-
-	v, err := c.BondByUID(ctx, uid)
-	if err == nil {
-		c.bondCacheMu.Lock()
-		c.bondShortCache[uid] = v
-		c.bondCacheMu.Unlock()
-	}
-	c.bCoalesceMu.Lock()
-	delete(c.bCoalesce, uid)
-	close(ch)
-	c.bCoalesceMu.Unlock()
-	return v, err
+		return &resp.Instrument, nil
+	})
 }
 
-// Coupons returns coupon events for a bond within [from, to].
+// BondRef is BondBy with the same UID-then-FIGI resolution as InstrumentRef. It
+// does not touch the unresolved counter: that counter measures reference data
+// (ticker/name/isin/currency), and a bond-specific failure leaves those fields
+// filled, while the CLI summary promises them empty.
+func (c *Client) BondRef(ctx context.Context, uid, figi string) (*bond, error) {
+	if uid == "" && figi == "" {
+		return nil, fmt.Errorf("нет идентификатора инструмента для BondBy")
+	}
+	if uid == "" {
+		return c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+	}
+	v, err := c.bondByID(ctx, "INSTRUMENT_ID_TYPE_UID", uid)
+	if err == nil || !isPermanent(err) || figi == "" {
+		return v, err
+	}
+	return c.bondByID(ctx, "INSTRUMENT_ID_TYPE_FIGI", figi)
+}
+
+// instrumentScoped runs an InstrumentsService method that accepts either a UID
+// or a FIGI, falling back to the FIGI when the UID is not in the catalog.
+func (c *Client) instrumentScoped(ctx context.Context, method, uid, figi string, request func(id string) any, out any) error {
+	if uid == "" {
+		uid, figi = figi, ""
+	}
+	if uid == "" {
+		return fmt.Errorf("нет идентификатора инструмента для %s", method)
+	}
+	err := c.call(ctx, "InstrumentsService", method, request(uid), out)
+	if err == nil || !isPermanent(err) || figi == "" {
+		return err
+	}
+	return c.call(ctx, "InstrumentsService", method, request(figi), out)
+}
+
+// Coupons returns coupon events for a bond within [from, to]. The endpoint only
+// accepts a FIGI.
 func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) ([]couponEvent, error) {
 	req := couponsRequest{FIGI: figi, From: rfc3339(from), To: rfc3339(to)}
 	var resp couponsResponse
-	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
+	if err := c.call(ctx, "InstrumentsService", "GetBondCoupons", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
@@ -412,20 +426,22 @@ func (c *Client) Coupons(ctx context.Context, figi string, from, to time.Time) (
 
 // BondEvents returns the bond's lifecycle events (coupons, calls, redemptions)
 // within [from, to].
-func (c *Client) BondEvents(ctx context.Context, instrumentID string, from, to time.Time) ([]bondEvent, error) {
-	req := bondEventsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
+func (c *Client) BondEvents(ctx context.Context, uid, figi string, from, to time.Time) ([]bondEvent, error) {
 	var resp bondEventsResponse
-	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetBondEvents", req, &resp); err != nil {
+	if err := c.instrumentScoped(ctx, "GetBondEvents", uid, figi, func(id string) any {
+		return bondEventsRequest{InstrumentID: id, From: rfc3339(from), To: rfc3339(to)}
+	}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Events, nil
 }
 
 // Dividends returns dividend events for a share within [from, to].
-func (c *Client) Dividends(ctx context.Context, instrumentID string, from, to time.Time) ([]dividend, error) {
-	req := dividendsRequest{InstrumentID: instrumentID, From: rfc3339(from), To: rfc3339(to)}
+func (c *Client) Dividends(ctx context.Context, uid, figi string, from, to time.Time) ([]dividend, error) {
 	var resp dividendsResponse
-	if err := c.enrichmentCall(ctx, "InstrumentsService", "GetDividends", req, &resp); err != nil {
+	if err := c.instrumentScoped(ctx, "GetDividends", uid, figi, func(id string) any {
+		return dividendsRequest{InstrumentID: id, From: rfc3339(from), To: rfc3339(to)}
+	}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Dividends, nil

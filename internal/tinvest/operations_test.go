@@ -2,9 +2,11 @@ package tinvest
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -115,5 +117,60 @@ func TestCollectOperationsPerAccountOpenedDate(t *testing.T) {
 	// With no global from, the effective start is the account opening date.
 	if period.From != "2020-01-01T00:00:00Z" {
 		t.Errorf("period.From = %q, want account opened date", period.From)
+	}
+}
+
+// TestBuildOperationReportsPermanentMissOnce: the local cache memoizes a
+// permanent miss, so one instrument produces one log line instead of one per
+// operation; a transient failure stays retryable for the next operation.
+func TestBuildOperationReportsPermanentMissOnce(t *testing.T) {
+	var missingHits, transientHits int32
+	var lines int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch req.ID {
+		case "u-missing":
+			atomic.AddInt32(&missingHits, 1)
+			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+		case "u-transient":
+			if atomic.AddInt32(&transientHits, 1) == 1 {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"instrument":{"uid":"u-transient","ticker":"SBER"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, func(format string, args ...any) {
+		lines++
+	}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	cache := map[string]*instrumentShort{}
+	acc := apiAccount{ID: "acc1"}
+
+	if op := c.buildOperation(ctx, acc, operationItem{InstrumentUID: "u-missing"}, cache); op.Ticker != "" {
+		t.Fatalf("ticker = %q, want the failed lookup to leave it empty", op.Ticker)
+	}
+	c.buildOperation(ctx, acc, operationItem{InstrumentUID: "u-missing"}, cache)
+	if lines != 1 {
+		t.Errorf("log lines = %d, want the permanent miss reported once per instrument", lines)
+	}
+	if got := atomic.LoadInt32(&missingHits); got != 1 {
+		t.Errorf("requests for the missing instrument = %d, want the memoized miss", got)
+	}
+
+	c.buildOperation(ctx, acc, operationItem{InstrumentUID: "u-transient"}, cache)
+	if op := c.buildOperation(ctx, acc, operationItem{InstrumentUID: "u-transient"}, cache); op.Ticker != "SBER" {
+		t.Errorf("ticker = %q, want the transient failure to stay retryable", op.Ticker)
+	}
+	if lines != 2 {
+		t.Errorf("log lines = %d, want the transient failure reported once as well", lines)
 	}
 }

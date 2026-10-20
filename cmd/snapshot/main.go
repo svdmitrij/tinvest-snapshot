@@ -27,6 +27,7 @@ func run() int {
 	modeOverride := flag.String("mode", "", "override mode: prod or sandbox")
 	fromFlag := flag.String("from", "", "operations period start date (ГГГГ-ММ-ДД); overrides autodetection")
 	toFlag := flag.String("to", "", "operations period end date (ГГГГ-ММ-ДД, inclusive); default is now")
+	timeoutSeconds := flag.Int("timeout", 1200, "overall run timeout in seconds; 0 disables it")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -69,6 +70,11 @@ func run() int {
 
 	fmt.Printf("Режим: %s. Получение данных из T-Invest API...\n", cfg.Mode)
 	ctx := context.Background()
+	if *timeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(*timeoutSeconds)*time.Second)
+		defer cancel()
+	}
 	snap, err := client.Collect(ctx, cfg.Mode, target, now, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Не удалось получить снимок портфеля: %v\n", err)
@@ -89,11 +95,11 @@ func run() int {
 		return 1
 	}
 
-	printSummary(snap, paths)
+	printSummary(snap, paths, client.Unresolved())
 	return 0
 }
 
-func printSummary(snap *model.Snapshot, paths report.Paths) {
+func printSummary(snap *model.Snapshot, paths report.Paths, unresolved int) {
 	fmt.Println()
 	fmt.Println("=== Сводка ===")
 	fmt.Printf("Счетов обработано: %d\n", len(snap.Accounts))
@@ -107,6 +113,9 @@ func printSummary(snap *model.Snapshot, paths report.Paths) {
 	fmt.Printf("Операций выгружено: %d\n", len(snap.Operations))
 	if snap.OperationsPeriod != nil {
 		fmt.Printf("Период операций: %s — %s\n", snap.OperationsPeriod.From, snap.OperationsPeriod.To)
+	}
+	if unresolved > 0 {
+		fmt.Printf("Не удалось получить справочные данные для %d инструментов — их поля тикера/ISIN/названия пусты\n", unresolved)
 	}
 	fmt.Println("Файлы:")
 	for _, p := range paths.All() {

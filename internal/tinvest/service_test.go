@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,9 @@ func TestCatalogLoadsDirectoriesConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Pacing is per service group, so the assertion measures dispatch: the
+	// directories must be requested in parallel, not one after another.
+	client.limiterInterval = time.Millisecond
 	started := time.Now()
 	var all []catalog.Instrument
 	var mu sync.Mutex
@@ -318,7 +322,7 @@ func TestEnrichCatalogCompletes400BondsWithinQuotaTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.enrichmentInterval = defaultEnrichmentInterval / 20
+	client.limiterInterval = defaultLimiterInterval / 20
 	got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 	if err != nil || len(got) != len(items) {
 		t.Fatalf("full quota enrichment: items=%d err=%v", len(got), err)
@@ -395,7 +399,7 @@ func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		client.enrichmentInterval = defaultEnrichmentInterval / 40
+		client.limiterInterval = defaultLimiterInterval / 40
 		got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected deadline exceeded, got %v", err)
@@ -414,7 +418,7 @@ func TestEnrichCatalogMeasuredLiveBondVolume(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		client.enrichmentInterval = defaultEnrichmentInterval / 40
+		client.limiterInterval = defaultLimiterInterval / 40
 		start := time.Now()
 		got, err := client.EnrichCatalog(ctx, items, time.Now(), nil)
 		elapsed := time.Since(start)
@@ -479,5 +483,226 @@ func TestEnrichCatalogReportsProgressPerInstrument(t *testing.T) {
 		if progress[i] != i+1 {
 			t.Fatalf("progress sequence = %v, want 1..%d in order", progress, len(items))
 		}
+	}
+}
+
+// TestInstrumentRefFallsBackToFIGI covers the live behaviour: the operations
+// service reports a UID the instruments catalog does not index, while the same
+// FIGI resolves. The miss must be memoized so the same instrument is not
+// re-fetched for every operation that references it.
+func TestInstrumentRefFallsBackToFIGIAndCachesMisses(t *testing.T) {
+	var uidHits, figiHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch req.IDType {
+		case "INSTRUMENT_ID_TYPE_UID":
+			atomic.AddInt32(&uidHits, 1)
+			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+		case "INSTRUMENT_ID_TYPE_FIGI":
+			atomic.AddInt32(&figiHits, 1)
+			if req.ID == "BBG-UNRESOLVABLE" {
+				http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+				return
+			}
+			w.Write([]byte(`{"instrument":{"uid":"catalog-uid","ticker":"GLRX","isin":"RU000A10CRQ4","name":"Глоракс"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	instr, err := c.InstrumentRef(ctx, "op-uid", "TCS00A10CRQ4")
+	if err != nil {
+		t.Fatalf("fallback lookup: %v", err)
+	}
+	if instr.Ticker != "GLRX" || instr.UID != "catalog-uid" {
+		t.Fatalf("fallback result = %+v, want the catalog record for the FIGI", instr)
+	}
+	if c.Unresolved() != 0 {
+		t.Errorf("unresolved = %d, want 0: the instrument was resolved through the FIGI", c.Unresolved())
+	}
+	if _, err := c.InstrumentRef(ctx, "op-uid", "TCS00A10CRQ4"); err != nil {
+		t.Fatalf("cached lookup: %v", err)
+	}
+	if uidHits != 1 || figiHits != 1 {
+		t.Errorf("hits uid=%d figi=%d, want one request per identifier", uidHits, figiHits)
+	}
+
+	if _, err := c.InstrumentRef(ctx, "op-uid-2", "BBG-UNRESOLVABLE"); err == nil {
+		t.Fatal("unresolvable instrument should report an error")
+	}
+	if _, err := c.InstrumentRef(ctx, "op-uid-2", "BBG-UNRESOLVABLE"); err == nil {
+		t.Fatal("cached miss should report an error")
+	}
+	if c.Unresolved() != 1 {
+		t.Errorf("unresolved = %d, want 1 counted once per instrument", c.Unresolved())
+	}
+	if uidHits != 2 || figiHits != 2 {
+		t.Errorf("hits uid=%d figi=%d, want the miss memoized", uidHits, figiHits)
+	}
+}
+
+// TestInstrumentRefUsesFIGIWhenUIDIsEmpty: an empty UID must not be sent as an
+// identifier.
+func TestInstrumentRefUsesFIGIWhenUIDIsEmpty(t *testing.T) {
+	var idTypes []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		idTypes = append(idTypes, req.IDType)
+		mu.Unlock()
+		if req.ID == "" {
+			http.Error(w, `{"code":3,"message":"id is required"}`, http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"instrument":{"uid":"catalog-uid","ticker":"GLRX"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instr, err := c.InstrumentRef(context.Background(), "", "TCS00A10CRQ4")
+	if err != nil {
+		t.Fatalf("FIGI-only lookup: %v", err)
+	}
+	if instr.Ticker != "GLRX" {
+		t.Fatalf("result = %+v", instr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(idTypes) != 1 || idTypes[0] != "INSTRUMENT_ID_TYPE_FIGI" {
+		t.Errorf("requests = %v, want a single FIGI request", idTypes)
+	}
+}
+
+// TestUnresolvedCountsInstrumentsOnce: the counter is keyed by instrument, not by
+// lookup, and only counts instruments whose reference data stayed missing.
+func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
+	// The real fallback shape: the operation uid is not in the catalog, and the
+	// FIGI lookup returns a different catalog uid.
+	catalogUID := map[string]string{"figi-1": "catalog-uid-1", "figi-3": "catalog-uid-3"}
+	var transientHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req instrumentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		switch req.ID {
+		case "uid-1", "uid-2", "figi-2":
+			http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+		case "uid-3":
+			if atomic.AddInt32(&transientHits, 1) == 1 {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"instrument":{"uid":"catalog-uid-3","figi":"figi-3","ticker":"VTB"}}`))
+		default:
+			uid := catalogUID[req.ID]
+			if uid == "" {
+				uid = req.ID
+			}
+			w.Write([]byte(`{"instrument":{"uid":"` + uid + `","figi":"` + req.ID + `","ticker":"GLRX"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Missing on both identifiers: one entry, whatever identifier reaches it.
+	if _, err := c.InstrumentRef(ctx, "uid-2", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if _, err := c.InstrumentRef(ctx, "", "figi-2"); err == nil {
+		t.Fatal("expected the memoized miss")
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-2", ""); err == nil {
+		t.Fatal("expected the memoized miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Fatalf("unresolved = %d, want one instrument for three lookups", got)
+	}
+	// The operation uid misses and the FIGI resolves to a different catalog uid:
+	// the record made under the operation uid must be cleared.
+	if _, err := c.InstrumentRef(ctx, "uid-1", ""); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want the operation-uid miss counted", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-1", "figi-1"); err != nil {
+		t.Fatalf("FIGI lookup: %v", err)
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the operation-uid record cleared by the catalog uid", got)
+	}
+	// The reverse direction: a record made under the FIGI key must be cleared by a
+	// later UID-only success.
+	if _, err := c.InstrumentRef(ctx, "uid-3", "figi-3"); err == nil {
+		t.Fatal("expected the transient failure to be reported")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want the FIGI-keyed record", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-3", ""); err != nil {
+		t.Fatalf("UID-only retry: %v", err)
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the FIGI-keyed record cleared by the UID-only success", got)
+	}
+	// A bond-data failure leaves the reference fields filled, so it must not be
+	// counted.
+	if _, err := c.BondRef(ctx, "uid-2", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the bond failure not counted", got)
+	}
+}
+
+// TestUnresolvedMergesRecordsMadeBeforeThePairIsKnown: an excluded paper can be
+// seen in operations with only a UID and separately with only a FIGI. Once a call
+// carries both identifiers, the two records must collapse into one instrument.
+func TestUnresolvedMergesRecordsMadeBeforeThePairIsKnown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := c.InstrumentRef(ctx, "uid-2", ""); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if _, err := c.InstrumentRef(ctx, "", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want two records while the pair is unknown", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-2", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the two records merged into one instrument", got)
 	}
 }

@@ -148,22 +148,30 @@ func (c *Client) buildOperation(ctx context.Context, a apiAccount, it operationI
 		PaymentCurrency: it.Payment.Currency,
 		State:           operationStateName(it.State),
 	}
-	if it.InstrumentUID != "" {
-		instr, ok := cache[it.InstrumentUID]
+	if it.InstrumentUID != "" || it.Figi != "" {
+		key := canonicalKey(it.InstrumentUID, it.Figi)
+		instr, ok := cache[key]
 		if !ok {
-			if got, err := c.InstrumentByUIDCached(ctx, it.InstrumentUID); err == nil {
-				instr = got
+			got, err := c.InstrumentRef(ctx, it.InstrumentUID, it.Figi)
+			if err != nil {
+				c.log("Не удалось получить справочные данные по инструменту %s: %v", key, err)
+				if isPermanent(err) {
+					// The miss is memoized for the run, so one instrument is
+					// reported once and not once per operation; transient
+					// failures stay retryable for the next operation.
+					cache[key] = nil
+				}
 			} else {
-				c.log("Не удалось получить справочные данные по инструменту %s: %v", it.InstrumentUID, err)
+				cache[key] = got
+				instr = got
 			}
-			cache[it.InstrumentUID] = instr
 		}
 		if instr != nil {
 			op.Ticker, op.ISIN, op.Name = instr.Ticker, instr.ISIN, instr.Name
 		}
 	}
-	// When InstrumentByUID fails or InstrumentUID is absent, the API operation
-	// item's own Name field holds the instrument name (per T-Invest API docs).
+	// When the instrument cannot be resolved at all, the API operation item's
+	// own Name field holds the instrument name (per T-Invest API docs).
 	// FIGI is a different identifier, not a ticker — it must not be substituted
 	// into the ticker column; users looking up a ticker would be misled.
 	if op.Name == "" && it.Name != "" {
@@ -343,7 +351,7 @@ func (c *Client) buildPosition(ctx context.Context, p portfolioPosition, now tim
 		pos.PnLPct = model.NA
 	}
 
-	if instr, err := c.InstrumentByUIDCached(ctx, p.InstrumentUID); err == nil {
+	if instr, err := c.InstrumentRef(ctx, p.InstrumentUID, p.Figi); err == nil {
 		if instr.Ticker != "" {
 			pos.Ticker = instr.Ticker
 		}
@@ -375,7 +383,7 @@ func (c *Client) enrichBond(ctx context.Context, p portfolioPosition, now time.T
 	var perYear int32
 	var maturity time.Time
 	var hasMaturity, floating, perpetual, amortized bool
-	if b, err := c.BondByUIDCached(ctx, p.InstrumentUID); err == nil {
+	if b, err := c.BondRef(ctx, p.InstrumentUID, p.Figi); err == nil {
 		if b.CouponQuantityPerYear > 0 {
 			perYear = b.CouponQuantityPerYear
 			info.CouponFrequency = strconv.Itoa(int(perYear))
@@ -472,7 +480,7 @@ func representativeCoupon(events []couponEvent, now time.Time) (money.Money, boo
 
 func (c *Client) enrichShare(ctx context.Context, p portfolioPosition, now time.Time) *model.ShareInfo {
 	info := model.NewShareInfo()
-	divs, err := c.Dividends(ctx, p.InstrumentUID, now.AddDate(-1, 0, 0), now.AddDate(1, 0, 0))
+	divs, err := c.Dividends(ctx, p.InstrumentUID, p.Figi, now.AddDate(-1, 0, 0), now.AddDate(1, 0, 0))
 	if err != nil {
 		c.log("Не удалось получить дивиденды %s: %v", p.InstrumentUID, err)
 		return info
