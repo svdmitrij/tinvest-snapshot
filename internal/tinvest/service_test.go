@@ -675,3 +675,34 @@ func TestUnresolvedCountsInstrumentsOnce(t *testing.T) {
 		t.Errorf("unresolved = %d, want the bond failure not counted", got)
 	}
 }
+
+// TestUnresolvedMergesRecordsMadeBeforeThePairIsKnown: an excluded paper can be
+// seen in operations with only a UID and separately with only a FIGI. Once a call
+// carries both identifiers, the two records must collapse into one instrument.
+func TestUnresolvedMergesRecordsMadeBeforeThePairIsKnown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":5,"message":"Instrument not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "tok", "test", 0, time.Millisecond, nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := c.InstrumentRef(ctx, "uid-2", ""); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if _, err := c.InstrumentRef(ctx, "", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 2 {
+		t.Fatalf("unresolved = %d, want two records while the pair is unknown", got)
+	}
+	if _, err := c.InstrumentRef(ctx, "uid-2", "figi-2"); err == nil {
+		t.Fatal("expected a permanent miss")
+	}
+	if got := c.Unresolved(); got != 1 {
+		t.Errorf("unresolved = %d, want the two records merged into one instrument", got)
+	}
+}

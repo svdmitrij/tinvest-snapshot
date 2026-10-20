@@ -236,8 +236,8 @@ func (c *Client) Unresolved() int {
 	return len(c.unresolved)
 }
 
-// markUnresolved records an instrument under the key it is known by: if the same
-// paper was already recorded under the other identifier, that key is reused, so a
+// markUnresolved records an instrument under the key it is known by. Records made
+// before the pair of identifiers was seen together collapse into that key, so a
 // paper known by both a UID and a FIGI is counted once.
 func (c *Client) markUnresolved(uid, figi string) {
 	c.unresolvedMu.Lock()
@@ -248,6 +248,9 @@ func (c *Client) markUnresolved(uid, figi string) {
 	keys := c.instrumentKeysLocked(uid, figi)
 	if len(keys) == 0 {
 		return
+	}
+	for _, key := range keys[1:] {
+		delete(c.unresolved, key)
 	}
 	c.unresolved[keys[0]] = true
 }
